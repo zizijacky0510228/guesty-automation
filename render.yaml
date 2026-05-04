@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: guesty-webhook
+    runtime: python
+    plan: starter
+    buildCommand: ""
+    startCommand: python3 guesty_webhook_server.py --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GUESTY_CLIENT_ID
+        sync: false
+      - key: GUESTY_CLIENT_SECRET
+        sync: false
+      - key: GUESTY_ALLOWED_PROPERTY_TOKENS
+        value: "3505,383,2171,6550"
+      - key: GUESTY_WEBHOOK_SECRET
+        sync: false
+      - key: GUESTY_WEBHOOK_SEND_ENABLED
+        value: "false"

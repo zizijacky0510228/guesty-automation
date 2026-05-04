@@ -1,0 +1,30 @@
+{
+  "reservationId": "test-reservation-2",
+  "conversation": {
+    "_id": "test-conversation-2",
+    "conversationWith": "Guest",
+    "meta": {
+      "guestName": "Test Guest",
+      "reservations": [
+        {
+          "_id": "test-reservation-2",
+          "confirmationCode": "TEST456",
+          "listing": {
+            "nickname": "6550-room-2"
+          }
+        }
+      ]
+    }
+  },
+  "message": {
+    "id": "test-message-2",
+    "type": "fromGuest",
+    "createdAt": "2026-05-04T01:01:00.000Z",
+    "body": "Can I extend my stay for two more nights?",
+    "module": {
+      "type": "bookingCom",
+      "reservationId": "test-reservation-2"
+    }
+  },
+  "event": "reservation.messageReceived"
+}

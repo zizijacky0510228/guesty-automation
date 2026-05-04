@@ -1,0 +1,30 @@
+{
+  "reservationId": "test-reservation-1",
+  "conversation": {
+    "_id": "test-conversation-1",
+    "conversationWith": "Guest",
+    "meta": {
+      "guestName": "Test Guest",
+      "reservations": [
+        {
+          "_id": "test-reservation-1",
+          "confirmationCode": "TEST123",
+          "listing": {
+            "nickname": "383-301"
+          }
+        }
+      ]
+    }
+  },
+  "message": {
+    "id": "test-message-1",
+    "type": "fromGuest",
+    "createdAt": "2026-05-04T01:00:00.000Z",
+    "body": "Thank you, I am on my way to the property.",
+    "module": {
+      "type": "bookingCom",
+      "reservationId": "test-reservation-1"
+    }
+  },
+  "event": "reservation.messageReceived"
+}
