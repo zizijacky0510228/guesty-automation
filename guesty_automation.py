@@ -297,6 +297,9 @@ class GuestyClient:
     def create_webhook(self, url: str, events: list[str]) -> Any:
         return self.api("POST", "/webhooks", body={"url": url, "events": events})
 
+    def delete_webhook(self, webhook_id: str) -> Any:
+        return self.api("DELETE", f"/webhooks/{webhook_id}")
+
     def infer_message_module(self, conversation_id: str) -> dict[str, Any] | None:
         for post in reversed(sort_posts(self.posts(conversation_id))):
             sample = module_sample(post)
@@ -658,6 +661,12 @@ ESCALATION_RULES = {
         "提前离开",
     ],
     "pre_arrival_access": [
+        "luggage",
+        "leave our luggage",
+        "leave luggage",
+        "drop off luggage",
+        "drop off bags",
+        "store luggage",
         "check the property",
         "see the property",
         "view the property",
@@ -669,10 +678,24 @@ ESCALATION_RULES = {
         "before arrival",
         "before check-in",
         "before check in",
+        "early check-in",
+        "early check in",
+        "check-in at 12",
+        "check in at 12",
         "提前看房",
         "提前进房",
         "提前进入",
         "入住前",
+    ],
+    "property_detail_or_setup": [
+        "parking",
+        "driveway",
+        "street parking",
+        "washer",
+        "dryer",
+        "two rooms",
+        "prepare the two rooms",
+        "separate rooms",
     ],
     "cancellation_or_dispute": [
         "cancel",
@@ -1201,6 +1224,18 @@ def cmd_create_webhook(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_delete_webhook(args: argparse.Namespace) -> int:
+    if not args.confirm_delete:
+        print("Dry run only. Re-run with --confirm-delete to delete this Guesty webhook.")
+        print(f"Webhook ID: {args.webhook_id}")
+        return 0
+    client = GuestyClient()
+    result = client.delete_webhook(args.webhook_id)
+    print("Webhook deleted.")
+    print(json.dumps(mask_secrets(result), indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Guesty guest-message automation helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1267,6 +1302,11 @@ def build_parser() -> argparse.ArgumentParser:
     create_webhook.add_argument("--event", action="append", help="Guesty webhook event. Can be repeated.")
     create_webhook.add_argument("--confirm-create", action="store_true")
     create_webhook.set_defaults(func=cmd_create_webhook)
+
+    delete_webhook = sub.add_parser("delete-webhook", help="Delete a Guesty webhook subscription")
+    delete_webhook.add_argument("--webhook-id", required=True)
+    delete_webhook.add_argument("--confirm-delete", action="store_true")
+    delete_webhook.set_defaults(func=cmd_delete_webhook)
 
     return parser
 

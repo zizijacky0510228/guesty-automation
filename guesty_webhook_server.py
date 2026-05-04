@@ -129,27 +129,25 @@ def webhook_scope_text(client: GuestyClient | None, payload: dict[str, Any]) -> 
     return reservation_property_scope_text(reservation)
 
 
-def simple_reply_for(body: str) -> str | None:
-    lowered = body.lower()
-    if "thank" in lowered or "thanks" in lowered:
-        return "Our pleasure and thank you for the update!"
-    if "going to" in lowered or "on my way" in lowered:
-        return "Thank you for the update! Safe travels, and please feel free to reach out if you need any assistance."
-    if "ok" in lowered or "okay" in lowered:
-        return "Thank you!"
-    if lowered in {"got it", "sounds good", "all good", "perfect"}:
-        return "Thank you!"
-    return None
+def normalized_body(body: str) -> str:
+    return " ".join(body.lower().replace("\n", " ").split())
 
 
-def uncertainty_reasons(body: str) -> list[str]:
-    lowered = body.lower()
-    question_words = [
+def is_question_or_request(body: str) -> bool:
+    lowered = normalized_body(body)
+    request_markers = [
         "?",
         "can i",
         "can we",
         "could i",
         "could we",
+        "would it be possible",
+        "is it possible",
+        "i would like to ask",
+        "i'd like to request",
+        "i would like to request",
+        "please prepare",
+        "will we be able",
         "do you",
         "where",
         "what",
@@ -165,9 +163,41 @@ def uncertainty_reasons(body: str) -> list[str]:
         "password",
         "address",
         "parking",
-        "wifi",
+        "driveway",
+        "street parking",
+        "luggage",
+        "bags",
+        "drop off",
+        "leave our",
+        "check-in at",
+        "check in at",
+        "early check",
+        "washer",
+        "dryer",
+        "two rooms",
+        "prepare the",
+        "separate rooms",
     ]
-    if any(item in lowered for item in question_words):
+    return any(marker in lowered for marker in request_markers)
+
+
+def simple_reply_for(body: str) -> str | None:
+    lowered = normalized_body(body)
+    if is_question_or_request(body):
+        return None
+    if "thank" in lowered or "thanks" in lowered:
+        return "Our pleasure and thank you for the update!"
+    if "going to" in lowered or "on my way" in lowered:
+        return "Thank you for the update! Safe travels, and please feel free to reach out if you need any assistance."
+    if "ok" in lowered or "okay" in lowered:
+        return "Thank you!"
+    if lowered in {"got it", "sounds good", "all good", "perfect"}:
+        return "Thank you!"
+    return None
+
+
+def uncertainty_reasons(body: str) -> list[str]:
+    if is_question_or_request(body):
         return ["unsupported_answer"]
     if len(body.split()) > 25:
         return ["unsupported_answer"]
