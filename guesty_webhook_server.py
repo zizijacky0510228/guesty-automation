@@ -46,6 +46,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
+APP_VERSION = "webhook-2026-05-04"
 
 
 def load_processed_events() -> dict[str, Any]:
@@ -295,7 +296,8 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     reasons = escalation_reasons(body)
     reply = simple_reply_for(body)
     if reply is None:
-        reasons.extend(reason for reason in uncertainty_reasons(body) if reason not in reasons)
+        unsupported_reasons = uncertainty_reasons(body) or ["unsupported_answer"]
+        reasons.extend(reason for reason in unsupported_reasons if reason not in reasons)
 
     if reasons:
         alert_body = render_alert(payload, reasons)
@@ -346,7 +348,15 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/health":
-            self.write_json(200, {"status": "ok"})
+            self.write_json(
+                200,
+                {
+                    "status": "ok",
+                    "version": APP_VERSION,
+                    "sendEnabled": env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False),
+                    "alertEmailEnabled": env_bool("GUESTY_ALERT_EMAIL_ENABLED", True),
+                },
+            )
             return
         self.write_json(404, {"error": "not_found"})
 
