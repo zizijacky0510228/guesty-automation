@@ -16,3 +16,19 @@ services:
         sync: false
       - key: GUESTY_WEBHOOK_SEND_ENABLED
         value: "false"
+      - key: GUESTY_ALERT_EMAIL_ENABLED
+        value: "true"
+      - key: GUESTY_ALERT_EMAIL_TO
+        value: "info@zhanhongltd.com"
+      - key: GUESTY_ALERT_EMAIL_FROM
+        sync: false
+      - key: GUESTY_ALERT_SMTP_HOST
+        value: "smtp.gmail.com"
+      - key: GUESTY_ALERT_SMTP_PORT
+        value: "587"
+      - key: GUESTY_ALERT_SMTP_USERNAME
+        sync: false
+      - key: GUESTY_ALERT_SMTP_PASSWORD
+        sync: false
+      - key: GUESTY_ALERT_SMTP_STARTTLS
+        value: "true"

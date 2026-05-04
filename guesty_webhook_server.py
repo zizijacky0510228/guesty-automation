@@ -12,7 +12,10 @@ import argparse
 import hashlib
 import json
 import os
+import smtplib
+import ssl
 import time
+from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,7 @@ from guesty_automation import (
     GuestyClient,
     GuestyError,
     allowed_property_tokens,
+    assert_guest_is_waiting,
     deep_get,
     env_bool,
     escalation_reasons,
@@ -40,6 +44,8 @@ from guesty_automation import (
 EVENT_LOG = DATA_DIR / "webhook_events.jsonl"
 PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
+WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
+DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
 
 
 def load_processed_events() -> dict[str, Any]:
@@ -122,7 +128,7 @@ def webhook_scope_text(client: GuestyClient | None, payload: dict[str, Any]) -> 
     return reservation_property_scope_text(reservation)
 
 
-def simple_reply_for(body: str) -> str:
+def simple_reply_for(body: str) -> str | None:
     lowered = body.lower()
     if "thank" in lowered or "thanks" in lowered:
         return "Our pleasure and thank you for the update!"
@@ -130,7 +136,41 @@ def simple_reply_for(body: str) -> str:
         return "Thank you for the update! Safe travels, and please feel free to reach out if you need any assistance."
     if "ok" in lowered or "okay" in lowered:
         return "Thank you!"
-    return "Thank you for your message. Please feel free to let us know if you need any assistance."
+    if lowered in {"got it", "sounds good", "all good", "perfect"}:
+        return "Thank you!"
+    return None
+
+
+def uncertainty_reasons(body: str) -> list[str]:
+    lowered = body.lower()
+    question_words = [
+        "?",
+        "can i",
+        "can we",
+        "could i",
+        "could we",
+        "do you",
+        "where",
+        "what",
+        "when",
+        "how",
+        "is there",
+        "are there",
+        "available",
+        "availability",
+        "price",
+        "fee",
+        "code",
+        "password",
+        "address",
+        "parking",
+        "wifi",
+    ]
+    if any(item in lowered for item in question_words):
+        return ["unsupported_answer"]
+    if len(body.split()) > 25:
+        return ["unsupported_answer"]
+    return []
 
 
 def render_alert(payload: dict[str, Any], reasons: list[str]) -> str:
@@ -158,6 +198,71 @@ def append_alert(payload: dict[str, Any], reasons: list[str]) -> None:
     with WEBHOOK_ALERTS.open("a", encoding="utf-8") as file:
         file.write(render_alert(payload, reasons))
         file.write("\n---\n\n")
+
+
+def alert_email_to() -> str:
+    return os.getenv("GUESTY_ALERT_EMAIL_TO", DEFAULT_ALERT_EMAIL_TO).strip() or DEFAULT_ALERT_EMAIL_TO
+
+
+def smtp_port() -> int:
+    raw = os.getenv("GUESTY_ALERT_SMTP_PORT", "587").strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise GuestyError("GUESTY_ALERT_SMTP_PORT must be a number.") from exc
+
+
+def send_alert_email(body: str) -> None:
+    host = os.getenv("GUESTY_ALERT_SMTP_HOST", "").strip()
+    username = os.getenv("GUESTY_ALERT_SMTP_USERNAME", "").strip()
+    password = os.getenv("GUESTY_ALERT_SMTP_PASSWORD", "").strip()
+    sender = os.getenv("GUESTY_ALERT_EMAIL_FROM", username).strip()
+    recipient = alert_email_to()
+    subject = os.getenv("GUESTY_ALERT_EMAIL_SUBJECT", "Guesty限制条件消息需要确认").strip()
+
+    missing = [
+        name
+        for name, value in {
+            "GUESTY_ALERT_SMTP_HOST": host,
+            "GUESTY_ALERT_SMTP_USERNAME": username,
+            "GUESTY_ALERT_SMTP_PASSWORD": password,
+            "GUESTY_ALERT_EMAIL_FROM": sender,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise GuestyError(f"Missing email configuration for restriction alert: {', '.join(missing)}")
+
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+
+    port = smtp_port()
+    use_ssl = env_bool("GUESTY_ALERT_SMTP_SSL", False)
+    use_starttls = env_bool("GUESTY_ALERT_SMTP_STARTTLS", not use_ssl)
+    context = ssl.create_default_context()
+
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as smtp:
+            smtp.login(username, password)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(host, port, timeout=30) as smtp:
+            if use_starttls:
+                smtp.starttls(context=context)
+            smtp.login(username, password)
+            smtp.send_message(message)
+
+    append_jsonl(
+        WEBHOOK_EMAIL_LOG,
+        {
+            "sentAt": time.time(),
+            "to": recipient,
+            "subject": subject,
+        },
+    )
 
 
 def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -188,13 +293,31 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     body = message_body(payload)
     reasons = escalation_reasons(body)
-    if reasons:
-        append_alert(payload, reasons)
-        processed[signature] = {"status": "needs_owner_review", "reasons": reasons, "processedAt": time.time()}
-        save_processed_events(processed)
-        return {"status": "needs_owner_review", "reasons": reasons, "alertPath": str(WEBHOOK_ALERTS)}
-
     reply = simple_reply_for(body)
+    if reply is None:
+        reasons.extend(reason for reason in uncertainty_reasons(body) if reason not in reasons)
+
+    if reasons:
+        alert_body = render_alert(payload, reasons)
+        append_alert(payload, reasons)
+        email_status = "disabled"
+        if env_bool("GUESTY_ALERT_EMAIL_ENABLED", True):
+            send_alert_email(alert_body)
+            email_status = "sent"
+        processed[signature] = {
+            "status": "needs_owner_review",
+            "reasons": reasons,
+            "email": email_status,
+            "processedAt": time.time(),
+        }
+        save_processed_events(processed)
+        return {
+            "status": "needs_owner_review",
+            "reasons": reasons,
+            "alertPath": str(WEBHOOK_ALERTS),
+            "email": email_status,
+        }
+
     if not env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False):
         processed[signature] = {"status": "dry_run_reply", "reply": reply, "processedAt": time.time()}
         save_processed_events(processed)
@@ -205,6 +328,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     cid = conversation_id(payload)
     if not cid:
         raise GuestyError("Webhook payload is missing conversation ID.")
+    assert_guest_is_waiting(client, cid)
     module = deep_get(payload, "message.module")
     if not isinstance(module, dict):
         module = client.infer_message_module(cid)

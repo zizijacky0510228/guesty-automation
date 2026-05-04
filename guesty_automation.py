@@ -29,6 +29,7 @@ PENDING_REVIEW_PATH = DATA_DIR / "pending_review.md"
 RESTRICTION_ALERTS_PATH = DATA_DIR / "restriction_alerts.md"
 NOTIFIED_RESTRICTIONS_PATH = DATA_DIR / "notified_restrictions.json"
 DEFAULT_ALLOWED_PROPERTY_TOKENS = "3505,383,2171,6550"
+DEFAULT_PUBLIC_WEBHOOK_URL = "https://guesty-automation.onrender.com/webhooks/guesty/messages"
 
 
 class GuestyError(RuntimeError):
@@ -76,6 +77,40 @@ def safe_json_loads(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError as exc:
         raise GuestyError(f"Invalid JSON in environment value: {exc}") from exc
+
+
+def url_with_query_secret(url: str, secret: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(key, value) for key, value in query if key != "secret"]
+    query.append(("secret", secret))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def masked_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    masked_query = [
+        (key, "***" if key.lower() in {"secret", "token", "key"} else value)
+        for key, value in query
+    ]
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(masked_query)))
+
+
+def mask_secrets(value: Any) -> Any:
+    if isinstance(value, list):
+        return [mask_secrets(item) for item in value]
+    if isinstance(value, dict):
+        masked: dict[str, Any] = {}
+        for key, item in value.items():
+            if key.lower() in {"secret", "signingsecret", "signing_secret"}:
+                masked[key] = "***"
+            elif key.lower() == "url" and isinstance(item, str):
+                masked[key] = masked_url(item)
+            else:
+                masked[key] = mask_secrets(item)
+        return masked
+    return value
 
 
 def request_json(
@@ -255,6 +290,12 @@ class GuestyClient:
             f"/communication/conversations/{conversation_id}/send-message",
             body={"module": module, "body": body},
         )
+
+    def webhooks(self) -> list[dict[str, Any]]:
+        return extract_items(self.api("GET", "/webhooks"))
+
+    def create_webhook(self, url: str, events: list[str]) -> Any:
+        return self.api("POST", "/webhooks", body={"url": url, "events": events})
 
     def infer_message_module(self, conversation_id: str) -> dict[str, Any] | None:
         for post in reversed(sort_posts(self.posts(conversation_id))):
@@ -570,7 +611,14 @@ ESCALATION_RULES = {
     "date_change": [
         "change date",
         "change dates",
+        "change my date",
+        "change my dates",
+        "change booking date",
+        "change booking dates",
+        "change reservation date",
+        "change reservation dates",
         "modify date",
+        "modify dates",
         "modify reservation",
         "reschedule",
         "move my booking",
@@ -1117,6 +1165,42 @@ def cmd_send(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list_webhooks(_: argparse.Namespace) -> int:
+    client = GuestyClient()
+    print(json.dumps(mask_secrets(client.webhooks()), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_create_webhook(args: argparse.Namespace) -> int:
+    public_url = args.url or os.getenv("GUESTY_WEBHOOK_URL", DEFAULT_PUBLIC_WEBHOOK_URL)
+    if "secret=" not in public_url:
+        secret = require_env("GUESTY_WEBHOOK_SECRET")
+        public_url = url_with_query_secret(public_url, secret)
+
+    events = args.event or ["reservation.messageReceived"]
+    print(f"Webhook URL: {masked_url(public_url)}")
+    print(f"Events: {', '.join(events)}")
+    if not args.confirm_create:
+        print("Dry run only. Re-run with --confirm-create to create this webhook in Guesty.")
+        return 0
+
+    client = GuestyClient()
+    for webhook in client.webhooks():
+        existing_url = str(webhook.get("url") or "")
+        existing_events = webhook.get("events")
+        if existing_url == public_url and isinstance(existing_events, list):
+            missing_events = [event for event in events if event not in existing_events]
+            if not missing_events:
+                print("Webhook already exists with the requested event.")
+                print(json.dumps(mask_secrets(webhook), indent=2, ensure_ascii=False))
+                return 0
+
+    result = client.create_webhook(public_url, events)
+    print("Webhook created.")
+    print(json.dumps(mask_secrets(result), indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Guesty guest-message automation helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1174,6 +1258,15 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--body", required=True)
     send.add_argument("--confirm-send", action="store_true")
     send.set_defaults(func=cmd_send)
+
+    list_webhooks = sub.add_parser("list-webhooks", help="List Guesty webhook subscriptions")
+    list_webhooks.set_defaults(func=cmd_list_webhooks)
+
+    create_webhook = sub.add_parser("create-webhook", help="Create a Guesty webhook subscription")
+    create_webhook.add_argument("--url", help="Public webhook URL. Defaults to the Render Guesty webhook URL.")
+    create_webhook.add_argument("--event", action="append", help="Guesty webhook event. Can be repeated.")
+    create_webhook.add_argument("--confirm-create", action="store_true")
+    create_webhook.set_defaults(func=cmd_create_webhook)
 
     return parser
 

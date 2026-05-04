@@ -24,6 +24,7 @@ Important behavior:
 - Ignores out-of-scope properties completely.
 - Dry-runs guest replies by default.
 - Set `GUESTY_WEBHOOK_SEND_ENABLED=true` only after deployment testing.
+- Sends restriction-condition emails to `info@zhanhongltd.com` through SMTP.
 - Optional shared secret: set `GUESTY_WEBHOOK_SECRET` and send it in `X-Guesty-Webhook-Secret`.
 
 Local test:
@@ -45,6 +46,19 @@ Render settings:
 ```text
 Build Command: echo "No build step required"
 Start Command: python3 guesty_webhook_server.py --host 0.0.0.0 --port $PORT
+```
+
+SMTP variables required for restriction-condition email alerts:
+
+```text
+GUESTY_ALERT_EMAIL_ENABLED=true
+GUESTY_ALERT_EMAIL_TO=info@zhanhongltd.com
+GUESTY_ALERT_EMAIL_FROM=<sender email>
+GUESTY_ALERT_SMTP_HOST=smtp.gmail.com
+GUESTY_ALERT_SMTP_PORT=587
+GUESTY_ALERT_SMTP_USERNAME=<sender email>
+GUESTY_ALERT_SMTP_PASSWORD=<app password or SMTP password>
+GUESTY_ALERT_SMTP_STARTTLS=true
 ```
 
 After deploy, test:
