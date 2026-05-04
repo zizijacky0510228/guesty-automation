@@ -15,6 +15,8 @@ import os
 import smtplib
 import ssl
 import time
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,18 +27,23 @@ from guesty_automation import (
     DATA_DIR,
     GuestyClient,
     GuestyError,
+    ROOT,
     allowed_property_tokens,
     assert_guest_is_waiting,
     deep_get,
     env_bool,
     escalation_reasons,
     is_guest_post,
+    is_host_post,
     load_dotenv,
     matches_scope_text,
     post_body,
+    post_created_at,
+    post_sender,
     property_scope_text,
     reservation_property_scope_text,
     sanitize_send_module,
+    sort_posts,
     strip_html,
 )
 
@@ -46,7 +53,11 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-2026-05-04"
+APP_VERSION = "webhook-ai-review-2026-05-04"
+OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
+REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
+REPLY_EXAMPLES_PATH = DATA_DIR / "reply_examples.json"
+AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupported"}
 
 
 def load_processed_events() -> dict[str, Any]:
@@ -133,6 +144,10 @@ def normalized_body(body: str) -> str:
     return " ".join(body.lower().replace("\n", " ").split())
 
 
+def hard_escalation_reasons(body: str) -> list[str]:
+    return [reason for reason in escalation_reasons(body) if reason not in AI_SOFT_ESCALATION_REASONS]
+
+
 def is_question_or_request(body: str) -> bool:
     lowered = normalized_body(body)
     request_markers = [
@@ -204,7 +219,227 @@ def uncertainty_reasons(body: str) -> list[str]:
     return []
 
 
-def render_alert(payload: dict[str, Any], reasons: list[str]) -> str:
+def read_text(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return default
+
+
+def historical_reply_examples(limit: int = 12) -> list[dict[str, str]]:
+    if not REPLY_EXAMPLES_PATH.exists():
+        return []
+    try:
+        data = json.loads(REPLY_EXAMPLES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    examples = data.get("examples") if isinstance(data, dict) else None
+    if not isinstance(examples, list):
+        return []
+    rows = []
+    for item in examples[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        guest = str(item.get("guestMessage") or "").strip()
+        host = str(item.get("hostReply") or "").strip()
+        if guest and host:
+            rows.append({"guest": guest[:500], "host": host[:500]})
+    return rows
+
+
+def conversation_history(client: GuestyClient | None, cid: str, payload: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if client is not None and cid:
+        try:
+            posts = sort_posts(client.posts(cid))
+        except GuestyError:
+            posts = []
+        for post in posts[-24:]:
+            body = post_body(post)
+            if not body:
+                continue
+            if is_guest_post(post):
+                sender = "guest"
+            elif is_host_post(post):
+                sender = "host"
+            else:
+                sender = post_sender(post)
+            rows.append(
+                {
+                    "createdAt": post_created_at(post),
+                    "sender": sender,
+                    "body": body[:1200],
+                }
+            )
+    if not rows:
+        rows.append(
+            {
+                "createdAt": str(deep_get(payload, "message.createdAt") or ""),
+                "sender": "guest",
+                "body": message_body(payload)[:1200],
+            }
+        )
+    return rows
+
+
+def ai_reply_enabled() -> bool:
+    return env_bool("GUESTY_AI_REPLY_ENABLED", False)
+
+
+def ai_min_confidence() -> float:
+    raw = os.getenv("GUESTY_AI_MIN_CONFIDENCE", "0.78").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.78
+
+
+def openai_configured() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY", "").strip() and os.getenv("OPENAI_MODEL", "").strip())
+
+
+def openai_chat_json(messages: list[dict[str, str]]) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    model = os.getenv("OPENAI_MODEL", "").strip()
+    if not api_key or not model:
+        raise GuestyError("Missing OPENAI_API_KEY or OPENAI_MODEL for AI guest reply generation.")
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url=os.getenv("OPENAI_CHAT_URL", "https://api.openai.com/v1/chat/completions"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        data=body,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise GuestyError(f"OpenAI API HTTP {exc.code}: {raw}") from exc
+    except urllib.error.URLError as exc:
+        raise GuestyError(f"OpenAI API request failed: {exc.reason}") from exc
+
+    content = deep_get(data, "choices.0.message.content")
+    if not isinstance(content, str) or not content.strip():
+        raise GuestyError("OpenAI API returned no message content.")
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise GuestyError(f"OpenAI API returned invalid JSON: {content[:300]}") from exc
+    if not isinstance(parsed, dict):
+        raise GuestyError("OpenAI API JSON response must be an object.")
+    return parsed
+
+
+def ai_reply_decision(
+    client: GuestyClient | None,
+    payload: dict[str, Any],
+    cid: str,
+    body: str,
+    preliminary_reasons: list[str],
+) -> dict[str, Any]:
+    if not ai_reply_enabled():
+        reply = simple_reply_for(body)
+        if reply:
+            return {"action": "send", "reply": reply, "confidence": 0.95, "reasons": []}
+        return {
+            "action": "email_owner",
+            "reply": "",
+            "confidence": 1,
+            "reasons": preliminary_reasons or uncertainty_reasons(body) or ["unsupported_answer"],
+            "ownerSummary": "Message needs owner review because the safe local template could not answer it.",
+        }
+
+    if not openai_configured():
+        return {
+            "action": "email_owner",
+            "reply": "",
+            "confidence": 1,
+            "reasons": ["ai_not_configured"],
+            "ownerSummary": "AI reply generation is enabled but OPENAI_API_KEY or OPENAI_MODEL is missing.",
+        }
+
+    context = {
+        "propertyScopeTokens": allowed_property_tokens(),
+        "reservationId": reservation_id(payload),
+        "conversationId": cid,
+        "latestGuestMessage": body,
+        "preliminaryRestrictionReasons": preliminary_reasons,
+        "conversationHistory": conversation_history(client, cid, payload),
+        "ownerRules": read_text(OWNER_RULES_PATH)[:6000],
+        "replyStyle": read_text(REPLY_STYLE_PATH)[:4000],
+        "historicalReplyExamples": historical_reply_examples(),
+    }
+    system_prompt = (
+        "You are a careful short-term-rental guest messaging assistant. "
+        "Read the whole latest guest message and the conversation history before deciding. "
+        "Return only JSON with keys: action, reply, confidence, reasons, ownerSummary. "
+        "action must be either send or email_owner. "
+        "If action is send, reply must directly answer every guest question/request in the latest message, "
+        "use the guest's language, match the host's concise friendly style, and avoid unsupported promises. "
+        "Only send when the answer is clearly supported by owner rules, conversation history, historical replies, "
+        "or universally safe hospitality language. "
+        "If any detail is unknown, property-specific, policy-specific, about dates, refunds, compensation, "
+        "early check-in/access, luggage drop-off/storage, parking, access codes/passwords, availability, "
+        "room setup, safety, damage, legal/medical issues, or off-platform booking, choose email_owner unless "
+        "the exact answer is clearly present in the supplied context. "
+        "Never answer only with a generic acknowledgement when the guest asked a question. "
+        "Keep replies under 90 words unless the guest asked multiple simple questions."
+    )
+    decision = openai_chat_json(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+        ]
+    )
+    action = str(decision.get("action") or "").strip()
+    reply = str(decision.get("reply") or "").strip()
+    try:
+        confidence = float(decision.get("confidence", 0))
+    except (TypeError, ValueError):
+        confidence = 0
+    reasons = decision.get("reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    clean_reasons = [str(reason) for reason in reasons if str(reason).strip()]
+    if action != "send" or not reply or confidence < ai_min_confidence():
+        return {
+            "action": "email_owner",
+            "reply": "",
+            "confidence": confidence,
+            "reasons": clean_reasons or preliminary_reasons or ["unsupported_answer"],
+            "ownerSummary": str(decision.get("ownerSummary") or "AI chose owner review."),
+        }
+    if "?" in body and len(reply.split()) < 3:
+        return {
+            "action": "email_owner",
+            "reply": "",
+            "confidence": confidence,
+            "reasons": ["generic_or_incomplete_reply"],
+            "ownerSummary": "AI reply looked too generic for a guest question.",
+        }
+    return {
+        "action": "send",
+        "reply": reply,
+        "confidence": confidence,
+        "reasons": clean_reasons,
+        "ownerSummary": str(decision.get("ownerSummary") or ""),
+    }
+
+
+def render_alert(payload: dict[str, Any], reasons: list[str], owner_summary: str = "") -> str:
+    recommended = owner_summary.strip() or "Please confirm the correct answer, then reply to the guest in Guesty."
     return "\n".join(
         [
             "Guesty restriction-condition message needs owner review.",
@@ -218,16 +453,16 @@ def render_alert(payload: dict[str, Any], reasons: list[str]) -> str:
             message_body(payload),
             "",
             "Recommended next step:",
-            "Please confirm the correct answer, then reply to the guest in Guesty.",
+            recommended,
             "",
         ]
     )
 
 
-def append_alert(payload: dict[str, Any], reasons: list[str]) -> None:
+def append_alert(payload: dict[str, Any], reasons: list[str], owner_summary: str = "") -> None:
     DATA_DIR.mkdir(exist_ok=True)
     with WEBHOOK_ALERTS.open("a", encoding="utf-8") as file:
-        file.write(render_alert(payload, reasons))
+        file.write(render_alert(payload, reasons, owner_summary))
         file.write("\n---\n\n")
 
 
@@ -310,7 +545,11 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ignored", "reason": "duplicate"}
 
     needs_client = not property_scope_text(payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {})
-    client = GuestyClient() if needs_client or env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False) else None
+    client = (
+        GuestyClient()
+        if needs_client or env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False) or ai_reply_enabled()
+        else None
+    )
     scope_text = webhook_scope_text(client, payload)
     if not matches_scope_text(scope_text):
         processed[signature] = {"status": "ignored", "reason": "out_of_scope", "processedAt": time.time()}
@@ -322,16 +561,27 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "scopeText": scope_text,
         }
 
+    cid = conversation_id(payload)
     body = message_body(payload)
-    reasons = escalation_reasons(body)
-    reply = simple_reply_for(body)
-    if reply is None:
-        unsupported_reasons = uncertainty_reasons(body) or ["unsupported_answer"]
-        reasons.extend(reason for reason in unsupported_reasons if reason not in reasons)
+    preliminary_reasons = escalation_reasons(body)
+    hard_reasons = hard_escalation_reasons(body)
+    decision = ai_reply_decision(client, payload, cid, body, preliminary_reasons)
+    action = str(decision.get("action") or "")
+    reply = str(decision.get("reply") or "").strip()
+    reasons = [str(reason) for reason in decision.get("reasons", []) if str(reason).strip()]
+    owner_summary = str(decision.get("ownerSummary") or "").strip()
 
-    if reasons:
-        alert_body = render_alert(payload, reasons)
-        append_alert(payload, reasons)
+    if hard_reasons:
+        action = "email_owner"
+        for reason in hard_reasons:
+            if reason not in reasons:
+                reasons.append(reason)
+
+    if action != "send":
+        if not reasons:
+            reasons = ["unsupported_answer"]
+        alert_body = render_alert(payload, reasons, owner_summary)
+        append_alert(payload, reasons, owner_summary)
         email_status = "disabled"
         if env_bool("GUESTY_ALERT_EMAIL_ENABLED", True):
             send_alert_email(alert_body)
@@ -340,6 +590,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "status": "needs_owner_review",
             "reasons": reasons,
             "email": email_status,
+            "confidence": decision.get("confidence"),
             "processedAt": time.time(),
         }
         save_processed_events(processed)
@@ -348,16 +599,21 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "reasons": reasons,
             "alertPath": str(WEBHOOK_ALERTS),
             "email": email_status,
+            "confidence": decision.get("confidence"),
         }
 
     if not env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False):
-        processed[signature] = {"status": "dry_run_reply", "reply": reply, "processedAt": time.time()}
+        processed[signature] = {
+            "status": "dry_run_reply",
+            "reply": reply,
+            "confidence": decision.get("confidence"),
+            "processedAt": time.time(),
+        }
         save_processed_events(processed)
-        return {"status": "dry_run_reply", "reply": reply}
+        return {"status": "dry_run_reply", "reply": reply, "confidence": decision.get("confidence")}
 
     if client is None:
         client = GuestyClient()
-    cid = conversation_id(payload)
     if not cid:
         raise GuestyError("Webhook payload is missing conversation ID.")
     assert_guest_is_waiting(client, cid)
@@ -368,9 +624,14 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise GuestyError("Could not infer Guesty send module from webhook payload.")
 
     client.send_message(cid, reply, sanitize_send_module(module))
-    processed[signature] = {"status": "sent", "reply": reply, "processedAt": time.time()}
+    processed[signature] = {
+        "status": "sent",
+        "reply": reply,
+        "confidence": decision.get("confidence"),
+        "processedAt": time.time(),
+    }
     save_processed_events(processed)
-    return {"status": "sent", "reply": reply}
+    return {"status": "sent", "reply": reply, "confidence": decision.get("confidence")}
 
 
 class GuestyWebhookHandler(BaseHTTPRequestHandler):
@@ -385,6 +646,8 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "version": APP_VERSION,
                     "sendEnabled": env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False),
                     "alertEmailEnabled": env_bool("GUESTY_ALERT_EMAIL_ENABLED", True),
+                    "aiReplyEnabled": ai_reply_enabled(),
+                    "aiConfigured": openai_configured(),
                 },
             )
             return

@@ -23,6 +23,7 @@ Important behavior:
 - Only handles property/listing nicknames containing `3505`, `383`, `2171`, or `6550`.
 - Ignores out-of-scope properties completely.
 - Dry-runs guest replies by default.
+- With `GUESTY_AI_REPLY_ENABLED=true`, reads the latest guest message, conversation history, owner rules, and any local reply style/examples before deciding whether to send or email the owner.
 - Set `GUESTY_WEBHOOK_SEND_ENABLED=true` only after deployment testing.
 - Sends restriction-condition emails to `info@zhanhongltd.com` through SMTP.
 - Optional shared secret: set `GUESTY_WEBHOOK_SECRET` and send it in `X-Guesty-Webhook-Secret`.
@@ -46,6 +47,15 @@ Render settings:
 ```text
 Build Command: echo "No build step required"
 Start Command: python3 guesty_webhook_server.py --host 0.0.0.0 --port $PORT
+```
+
+AI variables required for context-aware replies:
+
+```text
+GUESTY_AI_REPLY_ENABLED=true
+GUESTY_AI_MIN_CONFIDENCE=0.78
+OPENAI_API_KEY=<OpenAI API key>
+OPENAI_MODEL=<model name>
 ```
 
 SMTP variables required for restriction-condition email alerts:
