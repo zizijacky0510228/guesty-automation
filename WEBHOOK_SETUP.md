@@ -39,3 +39,16 @@ http://127.0.0.1:8765/webhooks/guesty/messages
 ```
 
 For production, deploy it to a public HTTPS host and subscribe the HTTPS URL in Guesty.
+
+Render settings:
+
+```text
+Build Command: echo "No build step required"
+Start Command: python3 guesty_webhook_server.py --host 0.0.0.0 --port $PORT
+```
+
+After deploy, test:
+
+```text
+https://guesty-automation.onrender.com/health
+```

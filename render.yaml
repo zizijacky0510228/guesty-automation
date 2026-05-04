@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: guesty-webhook
+    name: guesty-automation
     runtime: python
-    plan: starter
-    buildCommand: ""
+    plan: free
+    buildCommand: echo "No build step required"
     startCommand: python3 guesty_webhook_server.py --host 0.0.0.0 --port $PORT
     envVars:
       - key: GUESTY_CLIENT_ID
