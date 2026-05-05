@@ -58,6 +58,21 @@ OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
 REPLY_EXAMPLES_PATH = DATA_DIR / "reply_examples.json"
 AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupported"}
+DEFAULT_AI_MODEL = "gpt-5.4-nano"
+
+
+def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    value = max(value, minimum)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
 
 
 def load_processed_events() -> dict[str, Any]:
@@ -226,7 +241,11 @@ def read_text(path: Path, default: str = "") -> str:
         return default
 
 
-def historical_reply_examples(limit: int = 12) -> list[dict[str, str]]:
+def historical_reply_examples(limit: int | None = None) -> list[dict[str, str]]:
+    if limit is None:
+        limit = env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12)
+    if limit <= 0:
+        return []
     if not REPLY_EXAMPLES_PATH.exists():
         return []
     try:
@@ -242,8 +261,9 @@ def historical_reply_examples(limit: int = 12) -> list[dict[str, str]]:
             continue
         guest = str(item.get("guestMessage") or "").strip()
         host = str(item.get("hostReply") or "").strip()
+        max_chars = env_int("GUESTY_AI_EXAMPLE_CHARS", 280, 80, 800)
         if guest and host:
-            rows.append({"guest": guest[:500], "host": host[:500]})
+            rows.append({"guest": guest[:max_chars], "host": host[:max_chars]})
     return rows
 
 
@@ -254,7 +274,9 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
             posts = sort_posts(client.posts(cid))
         except GuestyError:
             posts = []
-        for post in posts[-24:]:
+        post_limit = env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24)
+        body_chars = env_int("GUESTY_AI_HISTORY_BODY_CHARS", 700, 160, 1600)
+        for post in posts[-post_limit:]:
             body = post_body(post)
             if not body:
                 continue
@@ -268,7 +290,7 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
                 {
                     "createdAt": post_created_at(post),
                     "sender": sender,
-                    "body": body[:1200],
+                    "body": body[:body_chars],
                 }
             )
     if not rows:
@@ -276,7 +298,7 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
             {
                 "createdAt": str(deep_get(payload, "message.createdAt") or ""),
                 "sender": "guest",
-                "body": message_body(payload)[:1200],
+                "body": message_body(payload)[: env_int("GUESTY_AI_HISTORY_BODY_CHARS", 700, 160, 1600)],
             }
         )
     return rows
@@ -284,6 +306,10 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
 
 def ai_reply_enabled() -> bool:
     return env_bool("GUESTY_AI_REPLY_ENABLED", False)
+
+
+def openai_model() -> str:
+    return os.getenv("OPENAI_MODEL", DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL
 
 
 def ai_min_confidence() -> float:
@@ -295,21 +321,25 @@ def ai_min_confidence() -> float:
 
 
 def openai_configured() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY", "").strip() and os.getenv("OPENAI_MODEL", "").strip())
+    return bool(os.getenv("OPENAI_API_KEY", "").strip())
 
 
 def openai_chat_json(messages: list[dict[str, str]]) -> dict[str, Any]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    model = os.getenv("OPENAI_MODEL", "").strip()
-    if not api_key or not model:
-        raise GuestyError("Missing OPENAI_API_KEY or OPENAI_MODEL for AI guest reply generation.")
+    model = openai_model()
+    if not api_key:
+        raise GuestyError("Missing OPENAI_API_KEY for AI guest reply generation.")
 
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.2,
+        "max_completion_tokens": env_int("OPENAI_MAX_COMPLETION_TOKENS", 350, 80, 1000),
         "response_format": {"type": "json_object"},
     }
+    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "").strip()
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url=os.getenv("OPENAI_CHAT_URL", "https://api.openai.com/v1/chat/completions"),
@@ -367,18 +397,19 @@ def ai_reply_decision(
             "reply": "",
             "confidence": 1,
             "reasons": ["ai_not_configured"],
-            "ownerSummary": "AI reply generation is enabled but OPENAI_API_KEY or OPENAI_MODEL is missing.",
+            "ownerSummary": "AI reply generation is enabled but OPENAI_API_KEY is missing.",
         }
 
+    latest_chars = env_int("GUESTY_AI_LATEST_MESSAGE_CHARS", 900, 200, 2000)
     context = {
         "propertyScopeTokens": allowed_property_tokens(),
         "reservationId": reservation_id(payload),
         "conversationId": cid,
-        "latestGuestMessage": body,
+        "latestGuestMessage": body[:latest_chars],
         "preliminaryRestrictionReasons": preliminary_reasons,
         "conversationHistory": conversation_history(client, cid, payload),
-        "ownerRules": read_text(OWNER_RULES_PATH)[:6000],
-        "replyStyle": read_text(REPLY_STYLE_PATH)[:4000],
+        "ownerRules": read_text(OWNER_RULES_PATH)[: env_int("GUESTY_AI_OWNER_RULES_CHARS", 3200, 800, 8000)],
+        "replyStyle": read_text(REPLY_STYLE_PATH)[: env_int("GUESTY_AI_REPLY_STYLE_CHARS", 1400, 0, 4000)],
         "historicalReplyExamples": historical_reply_examples(),
     }
     system_prompt = (
@@ -545,11 +576,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ignored", "reason": "duplicate"}
 
     needs_client = not property_scope_text(payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {})
-    client = (
-        GuestyClient()
-        if needs_client or env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False) or ai_reply_enabled()
-        else None
-    )
+    client = GuestyClient() if needs_client else None
     scope_text = webhook_scope_text(client, payload)
     if not matches_scope_text(scope_text):
         processed[signature] = {"status": "ignored", "reason": "out_of_scope", "processedAt": time.time()}
@@ -565,7 +592,27 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     body = message_body(payload)
     preliminary_reasons = escalation_reasons(body)
     hard_reasons = hard_escalation_reasons(body)
-    decision = ai_reply_decision(client, payload, cid, body, preliminary_reasons)
+    simple_reply = simple_reply_for(body)
+    if hard_reasons:
+        decision = {
+            "action": "email_owner",
+            "reply": "",
+            "confidence": 1,
+            "reasons": hard_reasons,
+            "ownerSummary": "Message triggered a hard owner-review restriction, so AI was skipped to save tokens.",
+        }
+    elif simple_reply:
+        decision = {
+            "action": "send",
+            "reply": simple_reply,
+            "confidence": 0.95,
+            "reasons": [],
+            "ownerSummary": "",
+        }
+    else:
+        if ai_reply_enabled() and openai_configured() and client is None:
+            client = GuestyClient()
+        decision = ai_reply_decision(client, payload, cid, body, preliminary_reasons)
     action = str(decision.get("action") or "")
     reply = str(decision.get("reply") or "").strip()
     reasons = [str(reason) for reason in decision.get("reasons", []) if str(reason).strip()]
@@ -648,6 +695,10 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "alertEmailEnabled": env_bool("GUESTY_ALERT_EMAIL_ENABLED", True),
                     "aiReplyEnabled": ai_reply_enabled(),
                     "aiConfigured": openai_configured(),
+                    "aiModel": openai_model(),
+                    "aiContextPostLimit": env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24),
+                    "aiExampleLimit": env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12),
+                    "openaiMaxCompletionTokens": env_int("OPENAI_MAX_COMPLETION_TOKENS", 350, 80, 1000),
                 },
             )
             return

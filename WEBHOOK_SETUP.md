@@ -54,8 +54,12 @@ AI variables required for context-aware replies:
 ```text
 GUESTY_AI_REPLY_ENABLED=true
 GUESTY_AI_MIN_CONFIDENCE=0.78
+GUESTY_AI_CONTEXT_POST_LIMIT=8
+GUESTY_AI_HISTORY_BODY_CHARS=700
+GUESTY_AI_EXAMPLE_LIMIT=3
+OPENAI_MAX_COMPLETION_TOKENS=350
 OPENAI_API_KEY=<OpenAI API key>
-OPENAI_MODEL=<model name>
+OPENAI_MODEL=gpt-5.4-nano
 ```
 
 SMTP variables required for restriction-condition email alerts:
