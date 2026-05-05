@@ -30,6 +30,8 @@ services:
         value: "280"
       - key: GUESTY_AI_OWNER_RULES_CHARS
         value: "3200"
+      - key: GUESTY_AI_APPROVED_ANSWERS_CHARS
+        value: "5000"
       - key: GUESTY_AI_REPLY_STYLE_CHARS
         value: "1400"
       - key: GUESTY_AI_LATEST_MESSAGE_CHARS

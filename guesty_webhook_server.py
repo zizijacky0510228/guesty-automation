@@ -55,6 +55,7 @@ WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
 APP_VERSION = "webhook-ai-review-2026-05-04"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
+APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
 REPLY_EXAMPLES_PATH = DATA_DIR / "reply_examples.json"
 AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupported"}
@@ -409,6 +410,7 @@ def ai_reply_decision(
         "preliminaryRestrictionReasons": preliminary_reasons,
         "conversationHistory": conversation_history(client, cid, payload),
         "ownerRules": read_text(OWNER_RULES_PATH)[: env_int("GUESTY_AI_OWNER_RULES_CHARS", 3200, 800, 8000)],
+        "approvedAnswers": read_text(APPROVED_ANSWERS_PATH)[: env_int("GUESTY_AI_APPROVED_ANSWERS_CHARS", 5000, 1000, 12000)],
         "replyStyle": read_text(REPLY_STYLE_PATH)[: env_int("GUESTY_AI_REPLY_STYLE_CHARS", 1400, 0, 4000)],
         "historicalReplyExamples": historical_reply_examples(),
     }
@@ -420,7 +422,8 @@ def ai_reply_decision(
         "If action is send, reply must directly answer every guest question/request in the latest message, "
         "use the guest's language, match the host's concise friendly style, and avoid unsupported promises. "
         "Only send when the answer is clearly supported by owner rules, conversation history, historical replies, "
-        "or universally safe hospitality language. "
+        "approved answers, or universally safe hospitality language. "
+        "Approved answers are the highest-priority reusable owner-confirmed knowledge. "
         "If any detail is unknown, property-specific, policy-specific, about dates, refunds, compensation, "
         "early check-in/access, luggage drop-off/storage, parking, access codes/passwords, availability, "
         "room setup, safety, damage, legal/medical issues, or off-platform booking, choose email_owner unless "
