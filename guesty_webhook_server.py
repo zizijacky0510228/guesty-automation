@@ -62,6 +62,8 @@ REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
 REPLY_EXAMPLES_PATH = DATA_DIR / "reply_examples.json"
 AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupported"}
 DEFAULT_AI_MODEL = "gpt-5.4-nano"
+RECENT_OWNER_EXAMPLE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "rows": []}
+RECENT_OWNER_EXAMPLE_LOCK = threading.Lock()
 
 
 def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
@@ -272,6 +274,91 @@ def historical_reply_examples(limit: int | None = None) -> list[dict[str, str]]:
     return rows
 
 
+def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None = None) -> list[dict[str, str]]:
+    if client is None:
+        return []
+    if limit is None:
+        limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20)
+    if limit <= 0:
+        return []
+
+    now = time.time()
+    with RECENT_OWNER_EXAMPLE_LOCK:
+        if now < float(RECENT_OWNER_EXAMPLE_CACHE.get("expiresAt") or 0):
+            cached_rows = RECENT_OWNER_EXAMPLE_CACHE.get("rows")
+            if isinstance(cached_rows, list):
+                return cached_rows[:limit]
+
+    scan_limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150)
+    max_chars = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_CHARS", 360, 120, 1000)
+    rows: list[dict[str, str]] = []
+
+    try:
+        conversations = client.conversations(limit=scan_limit, unread_only=False)
+    except GuestyError:
+        return []
+
+    for conversation in conversations:
+        scope_text = property_scope_text(conversation)
+        if not matches_scope_text(scope_text):
+            continue
+        conversation_id_value = str(conversation.get("_id") or conversation.get("id") or "")
+        if not conversation_id_value:
+            continue
+        try:
+            posts = sort_posts(client.posts(conversation_id_value))
+        except GuestyError:
+            continue
+
+        last_guest_body = ""
+        last_guest_at = ""
+        for post in posts:
+            body = post_body(post).strip()
+            if not body:
+                continue
+            if is_guest_post(post):
+                last_guest_body = body
+                last_guest_at = post_created_at(post)
+                continue
+            if not is_host_post(post) or not last_guest_body:
+                continue
+            if post.get("isAutomatic") is True:
+                last_guest_body = ""
+                last_guest_at = ""
+                continue
+            if len(body) > 900:
+                last_guest_body = ""
+                last_guest_at = ""
+                continue
+            rows.append(
+                {
+                    "conversationId": conversation_id_value,
+                    "reservation": str(
+                        deep_get(
+                            conversation,
+                            "reservation.confirmationCode",
+                            "reservation._id",
+                            "meta.reservations.0.confirmationCode",
+                        )
+                        or ""
+                    ),
+                    "propertyScope": scope_text[:120],
+                    "guest": last_guest_body[:max_chars],
+                    "host": body[:max_chars],
+                    "guestCreatedAt": last_guest_at,
+                    "hostCreatedAt": post_created_at(post),
+                }
+            )
+            last_guest_body = ""
+            last_guest_at = ""
+
+    cache_ttl = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_CACHE_SECONDS", 600, 60, 3600)
+    with RECENT_OWNER_EXAMPLE_LOCK:
+        RECENT_OWNER_EXAMPLE_CACHE["expiresAt"] = now + cache_ttl
+        RECENT_OWNER_EXAMPLE_CACHE["rows"] = rows[:limit]
+    return rows[:limit]
+
+
 def conversation_history(client: GuestyClient | None, cid: str, payload: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if client is not None and cid:
@@ -417,6 +504,7 @@ def ai_reply_decision(
         "approvedAnswers": read_text(APPROVED_ANSWERS_PATH)[: env_int("GUESTY_AI_APPROVED_ANSWERS_CHARS", 5000, 1000, 12000)],
         "replyStyle": read_text(REPLY_STYLE_PATH)[: env_int("GUESTY_AI_REPLY_STYLE_CHARS", 1400, 0, 4000)],
         "historicalReplyExamples": historical_reply_examples(),
+        "recentOwnerReplyExamples": recent_owner_reply_examples(client),
     }
     system_prompt = (
         "You are a careful short-term-rental guest messaging assistant. "
@@ -425,9 +513,11 @@ def ai_reply_decision(
         "action must be either send or email_owner. "
         "If action is send, reply must directly answer every guest question/request in the latest message, "
         "use the guest's language, match the host's concise friendly style, and avoid unsupported promises. "
-        "Only send when the answer is clearly supported by owner rules, conversation history, historical replies, "
-        "approved answers, or universally safe hospitality language. "
+        "Only send when the answer is clearly supported by owner rules, conversation history, recent owner replies, "
+        "historical replies, approved answers, or universally safe hospitality language. "
         "Approved answers are the highest-priority reusable owner-confirmed knowledge. "
+        "Recent owner replies are owner-confirmed examples from Guesty; reuse their substance for similar future "
+        "questions while preserving the current property's scope and avoiding unsupported promises. "
         "If any detail is unknown, property-specific, policy-specific, about dates, refunds, compensation, "
         "early check-in/access, luggage drop-off/storage, parking, access codes/passwords, availability, "
         "room setup, safety, damage, legal/medical issues, or off-platform booking, choose email_owner unless "
@@ -797,6 +887,8 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", True),
                     "backstopIntervalSeconds": env_int("GUESTY_BACKSTOP_INTERVAL_SECONDS", 300, 60, 86400),
                     "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
+                    "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20),
+                    "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150),
                 },
             )
             return
