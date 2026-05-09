@@ -231,7 +231,7 @@ class GuestyClient:
             {"field": "status", "operator": "$eq", "value": "OPEN"},
         ]
         if unread_only:
-            filters.append({"field": "read", "operator": "$eq", "value": "false"})
+            filters.append({"field": "read", "operator": "$eq", "value": False})
 
         fallback_filters = [
             filters,
@@ -242,7 +242,10 @@ class GuestyClient:
         last_error: GuestyError | None = None
         for candidate_filters in fallback_filters:
             try:
-                return self._conversation_query(limit, candidate_filters)
+                conversations = self._conversation_query(limit, candidate_filters)
+                has_read_filter = any(item.get("field") == "read" for item in candidate_filters)
+                if conversations or not (unread_only and has_read_filter):
+                    return conversations
             except GuestyError as exc:
                 last_error = exc
         if last_error:

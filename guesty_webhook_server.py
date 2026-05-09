@@ -14,6 +14,7 @@ import json
 import os
 import smtplib
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +36,7 @@ from guesty_automation import (
     escalation_reasons,
     is_guest_post,
     is_host_post,
+    latest_guest_message,
     load_dotenv,
     matches_scope_text,
     post_body,
@@ -216,6 +218,8 @@ def simple_reply_for(body: str) -> str | None:
     lowered = normalized_body(body)
     if is_question_or_request(body):
         return None
+    if lowered in {"👍", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿", "👌", "🙏"}:
+        return "Thank you!"
     if "thank" in lowered or "thanks" in lowered:
         return "Our pleasure and thank you for the update!"
     if "going to" in lowered or "on my way" in lowered:
@@ -684,6 +688,94 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {"status": "sent", "reply": reply, "confidence": decision.get("confidence")}
 
 
+def reservation_id_from_conversation(conversation: dict[str, Any]) -> str:
+    value = deep_get(
+        conversation,
+        "reservation._id",
+        "reservation.id",
+        "meta.reservations.0._id",
+        "meta.reservations.0.id",
+    )
+    return str(value or "")
+
+
+def backstop_payload(conversation: dict[str, Any], latest_guest: dict[str, Any]) -> dict[str, Any]:
+    message = dict(latest_guest)
+    if not message.get("body"):
+        message["body"] = post_body(latest_guest)
+    if not message.get("type"):
+        message["type"] = "fromGuest"
+    reservation_value = (
+        deep_get(message, "module.reservationId", "reservationId")
+        or reservation_id_from_conversation(conversation)
+    )
+    return {
+        "event": "reservation.messageReceived",
+        "conversation": conversation,
+        "message": message,
+        "reservationId": str(reservation_value or ""),
+        "source": "backstop",
+    }
+
+
+def process_backstop_once() -> dict[str, Any]:
+    client = GuestyClient()
+    limit = env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300)
+    checked = 0
+    handled: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for conversation in client.conversations(limit=limit, unread_only=False):
+        conversation_id_value = str(conversation.get("_id") or conversation.get("id") or "")
+        if not conversation_id_value:
+            continue
+        try:
+            posts = client.posts(conversation_id_value)
+            latest_guest = latest_guest_message(posts)
+            if not latest_guest:
+                continue
+            checked += 1
+            payload = backstop_payload(conversation, latest_guest)
+            result = process_payload(payload)
+            if result.get("status") not in {"ignored"}:
+                handled.append(
+                    {
+                        "conversationId": conversation_id_value,
+                        "status": str(result.get("status")),
+                        "reservationId": str(payload.get("reservationId") or ""),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - keep one bad conversation from stopping the sweep
+            errors.append({"conversationId": conversation_id_value, "error": str(exc)})
+
+    return {"checked": checked, "handled": handled, "errors": errors}
+
+
+def start_backstop_thread() -> None:
+    if not env_bool("GUESTY_BACKSTOP_ENABLED", True):
+        print("Guesty webhook backstop sweep disabled.")
+        return
+
+    interval = env_int("GUESTY_BACKSTOP_INTERVAL_SECONDS", 300, 60, 86400)
+    start_delay = env_int("GUESTY_BACKSTOP_START_DELAY_SECONDS", 20, 0, 600)
+
+    def run_loop() -> None:
+        if start_delay:
+            time.sleep(start_delay)
+        while True:
+            try:
+                result = process_backstop_once()
+                if result["handled"] or result["errors"]:
+                    print(f"Guesty webhook backstop sweep: {json.dumps(result, ensure_ascii=False)}")
+            except Exception as exc:  # noqa: BLE001 - long-running service should keep serving webhooks
+                print(f"Guesty webhook backstop sweep failed: {exc}")
+            time.sleep(interval)
+
+    thread = threading.Thread(target=run_loop, name="guesty-backstop", daemon=True)
+    thread.start()
+    print(f"Guesty webhook backstop sweep enabled every {interval} seconds.")
+
+
 class GuestyWebhookHandler(BaseHTTPRequestHandler):
     server_version = "GuestyWebhook/0.1"
 
@@ -702,6 +794,9 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "aiContextPostLimit": env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24),
                     "aiExampleLimit": env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12),
                     "openaiMaxCompletionTokens": env_int("OPENAI_MAX_COMPLETION_TOKENS", 350, 80, 1000),
+                    "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", True),
+                    "backstopIntervalSeconds": env_int("GUESTY_BACKSTOP_INTERVAL_SECONDS", 300, 60, 86400),
+                    "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
                 },
             )
             return
@@ -757,6 +852,7 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), GuestyWebhookHandler)
     print(f"Guesty webhook receiver listening on http://{args.host}:{args.port}")
     print("POST /webhooks/guesty/messages")
+    start_backstop_thread()
     server.serve_forever()
     return 0
 
