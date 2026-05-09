@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-2026-05-04"
+APP_VERSION = "webhook-ai-review-relaxed-owner-2026-05-09"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -239,6 +239,16 @@ def uncertainty_reasons(body: str) -> list[str]:
     if len(body.split()) > 25:
         return ["unsupported_answer"]
     return []
+
+
+def safe_fallback_reply(body: str) -> str:
+    if is_question_or_request(body):
+        return (
+            "Thank you for reaching out. We will do our best to assist based on the booking details "
+            "and the check-in information provided. Please feel free to let us know if there is anything "
+            "specific you would like us to check."
+        )
+    return "Thank you for the update!"
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -476,20 +486,20 @@ def ai_reply_decision(
         if reply:
             return {"action": "send", "reply": reply, "confidence": 0.95, "reasons": []}
         return {
-            "action": "email_owner",
-            "reply": "",
-            "confidence": 1,
-            "reasons": preliminary_reasons or uncertainty_reasons(body) or ["unsupported_answer"],
-            "ownerSummary": "Message needs owner review because the safe local template could not answer it.",
+            "action": "send",
+            "reply": safe_fallback_reply(body),
+            "confidence": 0.6,
+            "reasons": preliminary_reasons or uncertainty_reasons(body) or ["fallback_reply"],
+            "ownerSummary": "AI replies are disabled, so a cautious non-restriction fallback reply was used.",
         }
 
     if not openai_configured():
         return {
-            "action": "email_owner",
-            "reply": "",
-            "confidence": 1,
+            "action": "send",
+            "reply": safe_fallback_reply(body),
+            "confidence": 0.55,
             "reasons": ["ai_not_configured"],
-            "ownerSummary": "AI reply generation is enabled but OPENAI_API_KEY is missing.",
+            "ownerSummary": "AI reply generation is enabled but OPENAI_API_KEY is missing; used fallback.",
         }
 
     latest_chars = env_int("GUESTY_AI_LATEST_MESSAGE_CHARS", 900, 200, 2000)
@@ -511,17 +521,19 @@ def ai_reply_decision(
         "Read the whole latest guest message and the conversation history before deciding. "
         "Return only JSON with keys: action, reply, confidence, reasons, ownerSummary. "
         "action must be either send or email_owner. "
+        "Use email_owner only for hard owner-restriction conditions listed in ownerRules or preliminaryRestrictionReasons, "
+        "such as date changes, refunds/compensation/payment disputes, early checkout, direct/off-platform booking, "
+        "confirmed availability/price/payment/order status, access codes/passwords when not clearly available, "
+        "or safety/damage/legal/medical/serious complaint issues. "
         "If action is send, reply must directly answer every guest question/request in the latest message, "
         "use the guest's language, match the host's concise friendly style, and avoid unsupported promises. "
-        "Only send when the answer is clearly supported by owner rules, conversation history, recent owner replies, "
-        "historical replies, approved answers, or universally safe hospitality language. "
+        "For non-restriction questions, prefer sending a helpful reply using owner rules, conversation history, "
+        "recent owner replies, historical replies, approved answers, or universally safe hospitality language. "
         "Approved answers are the highest-priority reusable owner-confirmed knowledge. "
         "Recent owner replies are owner-confirmed examples from Guesty; reuse their substance for similar future "
         "questions while preserving the current property's scope and avoiding unsupported promises. "
-        "If any detail is unknown, property-specific, policy-specific, about dates, refunds, compensation, "
-        "early check-in/access, luggage drop-off/storage, parking, access codes/passwords, availability, "
-        "room setup, safety, damage, legal/medical issues, or off-platform booking, choose email_owner unless "
-        "the exact answer is clearly present in the supplied context. "
+        "If a non-restriction detail is not exact, do not invent it; send a cautious service reply instead of "
+        "emailing the owner. "
         "Never answer only with a generic acknowledgement when the guest asked a question. "
         "Keep replies under 90 words unless the guest asked multiple simple questions."
     )
@@ -541,21 +553,29 @@ def ai_reply_decision(
     if not isinstance(reasons, list):
         reasons = []
     clean_reasons = [str(reason) for reason in reasons if str(reason).strip()]
-    if action != "send" or not reply or confidence < ai_min_confidence():
+    if action != "send" or not reply:
         return {
-            "action": "email_owner",
-            "reply": "",
+            "action": "send",
+            "reply": safe_fallback_reply(body),
+            "confidence": max(confidence, 0.6),
+            "reasons": clean_reasons or preliminary_reasons or ["fallback_reply"],
+            "ownerSummary": str(decision.get("ownerSummary") or "AI did not provide a sendable reply; used fallback."),
+        }
+    if confidence < ai_min_confidence() and not preliminary_reasons:
+        return {
+            "action": "send",
+            "reply": reply,
             "confidence": confidence,
-            "reasons": clean_reasons or preliminary_reasons or ["unsupported_answer"],
-            "ownerSummary": str(decision.get("ownerSummary") or "AI chose owner review."),
+            "reasons": clean_reasons or ["low_confidence_non_restriction"],
+            "ownerSummary": str(decision.get("ownerSummary") or "Low-confidence non-restriction reply allowed."),
         }
     if "?" in body and len(reply.split()) < 3:
         return {
-            "action": "email_owner",
-            "reply": "",
+            "action": "send",
+            "reply": safe_fallback_reply(body),
             "confidence": confidence,
             "reasons": ["generic_or_incomplete_reply"],
-            "ownerSummary": "AI reply looked too generic for a guest question.",
+            "ownerSummary": "AI reply looked too generic for a guest question; used fallback.",
         }
     return {
         "action": "send",
@@ -889,6 +909,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
                     "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20),
                     "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150),
+                    "aiEscalationMode": "hard_restrictions_only",
                 },
             )
             return
