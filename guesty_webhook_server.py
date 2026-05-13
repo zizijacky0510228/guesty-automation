@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-relaxed-owner-2026-05-09"
+APP_VERSION = "webhook-ai-review-human-action-2026-05-12"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -523,6 +523,8 @@ def ai_reply_decision(
         "action must be either send or email_owner. "
         "Use email_owner only for hard owner-restriction conditions listed in ownerRules or preliminaryRestrictionReasons, "
         "such as date changes, refunds/compensation/payment disputes, early checkout, direct/off-platform booking, "
+        "guest requests that require a human to physically handle, coordinate, approve, arrange, repair, clean, deliver supplies, "
+        "change rooms, resolve noise/neighbor issues, or send someone to the property, "
         "confirmed availability/price/payment/order status, access codes/passwords when not clearly available, "
         "or safety/damage/legal/medical/serious complaint issues. "
         "If action is send, reply must directly answer every guest question/request in the latest message, "
@@ -533,7 +535,7 @@ def ai_reply_decision(
         "Recent owner replies are owner-confirmed examples from Guesty; reuse their substance for similar future "
         "questions while preserving the current property's scope and avoiding unsupported promises. "
         "If a non-restriction detail is not exact, do not invent it; send a cautious service reply instead of "
-        "emailing the owner. "
+        "emailing the owner. If the guest is asking the host to do something operational, choose email_owner. "
         "Never answer only with a generic acknowledgement when the guest asked a question. "
         "Keep replies under 90 words unless the guest asked multiple simple questions."
     )
@@ -910,6 +912,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20),
                     "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150),
                     "aiEscalationMode": "hard_restrictions_only",
+                    "humanActionRequestsEscalate": True,
                 },
             )
             return
