@@ -9,6 +9,8 @@
 - `Approved reply style` 写以后类似问题要采用的回复方式。
 - 如果答案只适用于某个物业，必须写清楚 Scope，不能套用到其他物业。
 - 涉及日期变更、退款、提前退房、赔偿、付款纠纷、安全/法律/医疗问题，除非这里有非常明确的业主批准口径，否则仍然升级邮件。
+- 不要承诺额外提供、送达或安排毛巾、床品、床单、被套、枕头、毯子、纸巾或其他额外用品；我们只提供客人本次入住时配置的一套/一批用品。
+- 拒绝无法满足的诉求时，可以使用抱歉口吻，表达我们也感到抱歉，但不能扩大承诺。
 
 ## Approved Answers
 
@@ -176,18 +178,23 @@ Approved reply style:
 
 > Hi we do have a hairdryer available there for your convenience, which should be under the sink in your bathroom. Thanks
 
-### 9. Toilet Paper / Extra Bathroom Supplies
+### 9. Toilet Paper / Bathroom Supplies
 
 Scope: Use only when current property history supports the same location.
 
 Guest asks:
 
-- Where can we get more toilet paper?
-- We ran out of toilet paper.
+- Where is the toilet paper?
+- Where can we find the provided bathroom supplies?
 
 Approved reply style:
 
 > There should have more under the sink in the bathroom.
+
+Notes:
+
+- Do not promise delivery or restocking of toilet paper, paper towels, toiletries, or other supplies.
+- If the guest asks for extra supplies during the stay, use the extra-supplies policy below or escalate if it sounds like a missing/cleaning issue.
 
 ### 10. Minor Maintenance / Non-Urgent Issue
 
@@ -246,22 +253,26 @@ Notes:
 
 - If guest reports no hot water persists, flooding, electrical issue, or serious complaint, escalate to owner.
 
-### 13. Towels During Stay
+### 13. Extra Towels / Linens / Bedding / Supplies During Stay
 
-Scope: Use only when washer/dryer access is supported for the property.
+Scope: All in-scope properties.
 
 Guest asks:
 
-- Where can we get new towels?
 - Can we have more towels?
+- Can you bring/provide extra towels?
+- Can we get new/fresh towels, sheets, linens, bedding, blankets, pillows, or other extra supplies?
 
 Approved reply style:
 
-> As for the towels, they are intended to last for the duration of your stay. We recommend you to do the laundry using the washing and dryer machine provided in your unit. Thanks
+> Hi, we’re sorry for the inconvenience, but for each stay we provide one set of towels and bedding/linens for the guest. We’re unable to provide extra towels, linens, bedding, pillows, blankets or other extra supplies during the stay. Thanks for your understanding.
 
 Notes:
 
-- If guest reports missing towels at check-in or a cleaning issue, escalate or answer based on exact history/context.
+- Do not say we will bring, provide, deliver, arrange, prepare, or restock extra items.
+- Use a polite apologetic tone when declining the request, but keep the refusal clear.
+- If washer/dryer access is clearly supported, you may add: `If needed, you may use the washer and dryer during your stay.`
+- If the guest reports missing items at check-in, no towels/linens were provided at all, dirty bedding, or a cleaning issue, escalate to owner instead of denying.
 
 ### 14. AC / Heating Control
 
