@@ -578,7 +578,7 @@ def make_style_profile(examples_data: dict[str, Any]) -> str:
         f"- Average historical reply length: about {avg_words} words",
         "- Tone: match the historical host replies in `data/reply_examples.json` closely.",
         "- Keep replies direct, helpful, and guest-service oriented.",
-        "- Use the guest's language when the guest clearly writes in another language.",
+        "- Always reply in English, regardless of the language used by the guest.",
         "- Do not invent property details, fees, policies, or availability.",
         "",
         "## Common Openings",
