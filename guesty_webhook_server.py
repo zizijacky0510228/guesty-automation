@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-human-action-supplies-english-2026-05-23"
+APP_VERSION = "webhook-ai-review-human-action-checkin-source-2026-05-26"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -64,6 +64,32 @@ AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupporte
 DEFAULT_AI_MODEL = "gpt-5.4-nano"
 RECENT_OWNER_EXAMPLE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "rows": []}
 RECENT_OWNER_EXAMPLE_LOCK = threading.Lock()
+CHECK_IN_REFERENCE_KEYWORDS = (
+    "check-in",
+    "check in",
+    "checkin",
+    "self check",
+    "access code",
+    "entry code",
+    "door code",
+    "gate code",
+    "password",
+    "address",
+    "floor",
+    "room",
+    "unit",
+    "building",
+    "lockbox",
+    "wifi",
+    "wi-fi",
+    "parking",
+    "入住",
+    "门禁",
+    "密码",
+    "地址",
+    "楼层",
+    "房间",
+)
 
 
 def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
@@ -251,6 +277,18 @@ def safe_fallback_reply(body: str) -> str:
     return "Thank you for the update!"
 
 
+def is_check_in_reference(body: str) -> bool:
+    lowered = body.lower()
+    return any(keyword in lowered for keyword in CHECK_IN_REFERENCE_KEYWORDS)
+
+
+def post_identity(post: dict[str, Any]) -> str:
+    value = deep_get(post, "_id", "id", "createdAt")
+    if value:
+        return str(value)
+    return hashlib.sha256(post_body(post).encode("utf-8")).hexdigest()
+
+
 def read_text(path: Path, default: str = "") -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -378,7 +416,22 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
             posts = []
         post_limit = env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24)
         body_chars = env_int("GUESTY_AI_HISTORY_BODY_CHARS", 700, 160, 1600)
-        for post in posts[-post_limit:]:
+        checkin_limit = env_int("GUESTY_AI_CHECKIN_REFERENCE_LIMIT", 3, 0, 8)
+        checkin_body_chars = env_int("GUESTY_AI_CHECKIN_BODY_CHARS", 1400, 300, 2400)
+        checkin_posts = [
+            post
+            for post in posts
+            if not is_guest_post(post) and is_check_in_reference(post_body(post))
+        ][-checkin_limit:]
+        selected_posts = []
+        seen_posts: set[str] = set()
+        for post in checkin_posts + posts[-post_limit:]:
+            key = post_identity(post)
+            if key in seen_posts:
+                continue
+            seen_posts.add(key)
+            selected_posts.append(post)
+        for post in sort_posts(selected_posts):
             body = post_body(post)
             if not body:
                 continue
@@ -388,11 +441,12 @@ def conversation_history(client: GuestyClient | None, cid: str, payload: dict[st
                 sender = "host"
             else:
                 sender = post_sender(post)
+            limit = checkin_body_chars if is_check_in_reference(body) else body_chars
             rows.append(
                 {
                     "createdAt": post_created_at(post),
                     "sender": sender,
-                    "body": body[:body_chars],
+                    "body": body[:limit],
                 }
             )
     if not rows:
@@ -529,6 +583,9 @@ def ai_reply_decision(
         "or safety/damage/legal/medical/serious complaint issues. "
         "If action is send, reply must be in English regardless of the guest's language, directly answer every "
         "guest question/request in the latest message, match the host's concise friendly style, and avoid unsupported promises. "
+        "For check-in, address, access code, password, floor, room, Wi-Fi, parking, or arrival-instruction questions, "
+        "answer only from the automated check-in information or host messages included in conversationHistory; "
+        "do not infer or invent missing details. If the needed detail is not present, choose email_owner. "
         "Never promise to provide, bring, deliver, arrange, prepare, or restock extra towels, linens, bedding, "
         "sheets, pillows, blankets, paper products, toiletries, or other supplies; the owner only provides the "
         "initial set/batch prepared for the current stay. "
@@ -909,6 +966,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "aiConfigured": openai_configured(),
                     "aiModel": openai_model(),
                     "aiContextPostLimit": env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24),
+                    "aiCheckInReferenceLimit": env_int("GUESTY_AI_CHECKIN_REFERENCE_LIMIT", 3, 0, 8),
                     "aiExampleLimit": env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12),
                     "openaiMaxCompletionTokens": env_int("OPENAI_MAX_COMPLETION_TOKENS", 350, 80, 1000),
                     "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", True),
