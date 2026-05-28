@@ -44,7 +44,7 @@ python3 guesty_automation.py inbox-report --out data/inbox_report.md
 自动回复范围只处理 property nickname 包含以下 token 的物业：
 
 ```text
-3505, 383, 2171, 6550
+3505, 383, 2171, 6550, 2030, 5553
 ```
 
 学习历史 host 回复，生成本地风格文件：

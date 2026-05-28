@@ -11,7 +11,7 @@ services:
       - key: GUESTY_CLIENT_SECRET
         sync: false
       - key: GUESTY_ALLOWED_PROPERTY_TOKENS
-        value: "3505,383,2171,6550"
+        value: "3505,383,2171,6550,2030,5553"
       - key: GUESTY_WEBHOOK_SECRET
         sync: false
       - key: GUESTY_WEBHOOK_SEND_ENABLED

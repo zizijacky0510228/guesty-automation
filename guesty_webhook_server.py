@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-human-action-checkin-source-2026-05-26"
+APP_VERSION = "webhook-ai-review-human-action-scope-2030-5553-2026-05-28"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -965,6 +965,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "aiReplyEnabled": ai_reply_enabled(),
                     "aiConfigured": openai_configured(),
                     "aiModel": openai_model(),
+                    "propertyScopeTokens": allowed_property_tokens(),
                     "aiContextPostLimit": env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24),
                     "aiCheckInReferenceLimit": env_int("GUESTY_AI_CHECKIN_REFERENCE_LIMIT", 3, 0, 8),
                     "aiExampleLimit": env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12),

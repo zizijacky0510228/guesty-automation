@@ -28,7 +28,7 @@ EXAMPLES_PATH = DATA_DIR / "reply_examples.json"
 PENDING_REVIEW_PATH = DATA_DIR / "pending_review.md"
 RESTRICTION_ALERTS_PATH = DATA_DIR / "restriction_alerts.md"
 NOTIFIED_RESTRICTIONS_PATH = DATA_DIR / "notified_restrictions.json"
-DEFAULT_ALLOWED_PROPERTY_TOKENS = "3505,383,2171,6550"
+DEFAULT_ALLOWED_PROPERTY_TOKENS = "3505,383,2171,6550,2030,5553"
 DEFAULT_PUBLIC_WEBHOOK_URL = "https://guesty-automation.onrender.com/webhooks/guesty/messages"
 
 
@@ -59,8 +59,13 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def allowed_property_tokens() -> list[str]:
-    raw = os.getenv("GUESTY_ALLOWED_PROPERTY_TOKENS", DEFAULT_ALLOWED_PROPERTY_TOKENS)
-    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+    configured = [item.strip().lower() for item in os.getenv("GUESTY_ALLOWED_PROPERTY_TOKENS", "").split(",") if item.strip()]
+    defaults = [item.strip().lower() for item in DEFAULT_ALLOWED_PROPERTY_TOKENS.split(",") if item.strip()]
+    tokens = configured or defaults
+    for token in defaults:
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def require_env(name: str) -> str:

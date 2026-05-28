@@ -4,7 +4,7 @@
 
 ## 使用规则
 
-- `Scope` 可以是 `All`，也可以是具体 property nickname token：`3505`、`383`、`2171`、`6550`。
+- `Scope` 可以是 `All`，也可以是具体 property nickname token：`3505`、`383`、`2171`、`6550`、`2030`、`5553`。
 - `Guest asks` 写客人问题类型，不需要逐字一样。
 - `Approved reply style` 写以后类似问题要采用的回复方式。
 - 如果答案只适用于某个物业，必须写清楚 Scope，不能套用到其他物业。

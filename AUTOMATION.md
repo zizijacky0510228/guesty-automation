@@ -17,7 +17,7 @@ python3 guesty_automation.py review-new --out data/pending_review.md
 
 Then:
 
-- Scope: only process conversations whose property/listing nickname matches tokens `3505`, `383`, `2171`, or `6550`; ignore all other properties completely.
+- Scope: only process conversations whose property/listing nickname matches tokens `3505`, `383`, `2171`, `6550`, `2030`, or `5553`; ignore all other properties completely.
 - For `NEEDS_OWNER_REVIEW`, do not reply to the guest. Tell the owner in Chinese what happened and why it triggered a restriction.
 - For `DRAFT_ELIGIBLE`, read `OWNER_RULES.md`, `data/reply_style.md`, and `data/reply_examples.json`, then send a reply in the learned style.
 - Ordinary Booking.com/platform questions can be answered directly with conservative platform-guidance language unless the guest asks for a reservation change, refund, early checkout, direct/off-platform booking, unavailable access details, confirmed price, or confirmed availability.
