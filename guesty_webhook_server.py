@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-human-action-scope-2030-5553-2026-05-28"
+APP_VERSION = "webhook-ai-review-human-memory-2026-05-28"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -326,7 +326,7 @@ def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None =
     if client is None:
         return []
     if limit is None:
-        limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20)
+        limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 12, 0, 20)
     if limit <= 0:
         return []
 
@@ -337,8 +337,8 @@ def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None =
             if isinstance(cached_rows, list):
                 return cached_rows[:limit]
 
-    scan_limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150)
-    max_chars = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_CHARS", 360, 120, 1000)
+    scan_limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 100, 5, 200)
+    max_chars = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_CHARS", 500, 120, 1000)
     rows: list[dict[str, str]] = []
 
     try:
@@ -594,8 +594,10 @@ def ai_reply_decision(
         "For non-restriction questions, prefer sending a helpful reply using owner rules, conversation history, "
         "recent owner replies, historical replies, approved answers, or universally safe hospitality language. "
         "Approved answers are the highest-priority reusable owner-confirmed knowledge. "
-        "Recent owner replies are owner-confirmed examples from Guesty; reuse their substance for similar future "
-        "questions while preserving the current property's scope and avoiding unsupported promises. "
+        "Treat every non-automatic host/owner reply in conversationHistory and recentOwnerReplyExamples as owner memory. "
+        "For similar future questions, reuse the latest owner-approved substance and wording when it does not conflict "
+        "with ownerRules. If owner memory conflicts with older historical examples, follow ownerRules first, then the "
+        "latest owner replies, then approved answers and older historical examples. "
         "If a non-restriction detail is not exact, do not invent it; send a cautious service reply instead of "
         "emailing the owner. If the guest is asking the host to do something operational, choose email_owner. "
         "Never answer only with a generic acknowledgement when the guest asked a question. "
@@ -973,8 +975,8 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", True),
                     "backstopIntervalSeconds": env_int("GUESTY_BACKSTOP_INTERVAL_SECONDS", 300, 60, 86400),
                     "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
-                    "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 8, 0, 20),
-                    "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 50, 5, 150),
+                    "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 12, 0, 20),
+                    "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 100, 5, 200),
                     "aiEscalationMode": "hard_restrictions_only",
                     "humanActionRequestsEscalate": True,
                 },
