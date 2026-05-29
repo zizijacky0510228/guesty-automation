@@ -69,3 +69,12 @@ python3 guesty_automation.py review-new --out data/pending_review.md
 4. Webhook 模式：Guesty 有新消息时触发，不靠轮询。
 
 限制条件包括改期/延住/缩短住宿、退款/赔偿/付款纠纷、提前退房、缺失的门禁/房门密码、平台外预订、安全事故、以及历史规则里找不到答案的问题。
+
+## 清洁任务云端自动化
+
+清洁报告脚本在 `guesty_cleaning_report.py`。Render cron 每 30 分钟唤醒一次脚本，脚本按 Vancouver 时间只在两个窗口真正执行：
+
+- 20:00：发送明天清洁任务，并保存当天 10:30 要对比的基准快照。
+- 10:30：对比当前当天清洁任务和前一天 20:00 快照，有新增、移除或 turnover 星标变化时发送更新。
+
+配置细节见 `CLEANING_SETUP.md`。

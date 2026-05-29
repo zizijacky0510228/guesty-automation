@@ -58,3 +58,70 @@ services:
         sync: false
       - key: GUESTY_ALERT_SMTP_STARTTLS
         value: "true"
+
+  - type: keyvalue
+    name: guesty-cleaning-state
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+  - type: cron
+    name: guesty-cleaning-cloud-scheduler
+    runtime: python
+    plan: starter
+    schedule: "*/30 * * * *"
+    buildCommand: echo "No build step required"
+    startCommand: python3 guesty_cleaning_report.py --mode schedule
+    envVars:
+      - key: GUESTY_CLIENT_ID
+        fromService:
+          type: web
+          name: guesty-automation
+          envVarKey: GUESTY_CLIENT_ID
+      - key: GUESTY_CLIENT_SECRET
+        fromService:
+          type: web
+          name: guesty-automation
+          envVarKey: GUESTY_CLIENT_SECRET
+      - key: GUESTY_BASE_URL
+        value: "https://open-api.guesty.com/v1"
+      - key: GUESTY_TOKEN_URL
+        value: "https://open-api.guesty.com/oauth2/token"
+      - key: REPORT_TIMEZONE
+        value: "America/Vancouver"
+      - key: CLEANING_SEND_EMAIL
+        value: "true"
+      - key: CLEANING_EMAIL_TO
+        value: "jacky.s@zhanhongltd.com,info@zhanhongltd.com"
+      - key: CLEANING_ALERT_ON_MISSING_BASELINE
+        value: "true"
+      - key: CLEANING_STATE_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: guesty-cleaning-state
+          property: connectionString
+      - key: CLEANING_STATE_KEY_PREFIX
+        value: "guesty-cleaning"
+      - key: CLEANING_SMTP_HOST
+        value: "smtp.gmail.com"
+      - key: CLEANING_SMTP_PORT
+        value: "587"
+      - key: CLEANING_SMTP_USERNAME
+        fromService:
+          type: web
+          name: guesty-automation
+          envVarKey: GUESTY_ALERT_SMTP_USERNAME
+      - key: CLEANING_SMTP_PASSWORD
+        fromService:
+          type: web
+          name: guesty-automation
+          envVarKey: GUESTY_ALERT_SMTP_PASSWORD
+      - key: CLEANING_EMAIL_FROM
+        fromService:
+          type: web
+          name: guesty-automation
+          envVarKey: GUESTY_ALERT_EMAIL_FROM
+      - key: CLEANING_SMTP_STARTTLS
+        value: "true"
+      - key: CLEANING_SEND_WECOM
+        value: "false"
