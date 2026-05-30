@@ -55,7 +55,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-human-memory-2026-05-28"
+APP_VERSION = "webhook-ai-review-webhook-only-2026-05-30"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -928,7 +928,7 @@ def process_backstop_once() -> dict[str, Any]:
 
 
 def start_backstop_thread() -> None:
-    if not env_bool("GUESTY_BACKSTOP_ENABLED", True):
+    if not env_bool("GUESTY_BACKSTOP_ENABLED", False):
         print("Guesty webhook backstop sweep disabled.")
         return
 
@@ -972,7 +972,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "aiCheckInReferenceLimit": env_int("GUESTY_AI_CHECKIN_REFERENCE_LIMIT", 3, 0, 8),
                     "aiExampleLimit": env_int("GUESTY_AI_EXAMPLE_LIMIT", 3, 0, 12),
                     "openaiMaxCompletionTokens": env_int("OPENAI_MAX_COMPLETION_TOKENS", 350, 80, 1000),
-                    "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", True),
+                    "backstopEnabled": env_bool("GUESTY_BACKSTOP_ENABLED", False),
                     "backstopIntervalSeconds": env_int("GUESTY_BACKSTOP_INTERVAL_SECONDS", 300, 60, 86400),
                     "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
                     "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 12, 0, 20),

@@ -7,9 +7,11 @@
 - `data/reply_style.md`: generated style profile.
 - `data/pending_review.md`: latest triage output.
 
-## Regular Check
+## Webhook Trigger
 
-The Codex thread automation runs this every 5 minutes so guest messages are handled promptly without constant polling cost:
+Production guest replies are webhook-only: Guesty calls the Render endpoint when a guest sends a message. Do not run polling or backstop sweeps for normal operation.
+
+Manual diagnostic command only:
 
 ```bash
 python3 guesty_automation.py review-new --out data/pending_review.md
@@ -34,7 +36,7 @@ Send the rendered body by Gmail to `info@zhanhongltd.com`, then mark those exact
 python3 guesty_automation.py restriction-alerts --mark-sent --out data/restriction_alerts.md
 ```
 
-For true instant push instead of 5-minute checks, configure Guesty message webhooks to call a public HTTPS endpoint that runs the same review/send logic.
+Guesty message webhooks are the source of truth for normal operation. Backstop polling is disabled by default to avoid unnecessary Guesty API usage and rate limits.
 
 ## Sending
 

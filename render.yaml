@@ -36,6 +36,8 @@ services:
         value: "1400"
       - key: GUESTY_AI_LATEST_MESSAGE_CHARS
         value: "900"
+      - key: GUESTY_BACKSTOP_ENABLED
+        value: "false"
       - key: OPENAI_MAX_COMPLETION_TOKENS
         value: "350"
       - key: OPENAI_API_KEY
