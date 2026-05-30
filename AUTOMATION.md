@@ -49,8 +49,7 @@ To actually send, `GUESTY_SEND_ENABLED=true` must be set in `.env` and the comma
 ## Cleaning Reports
 
 The cleaning report now runs in Render as `guesty-cleaning-cloud-scheduler`.
-Render wakes it every 30 minutes, and the script only performs work in the
-configured Vancouver-time windows:
+Render wakes it only around the configured Vancouver-time windows:
 
 ```bash
 python3 guesty_cleaning_report.py --mode schedule

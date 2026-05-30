@@ -69,7 +69,9 @@ services:
     name: guesty-cleaning-cloud-scheduler
     runtime: python
     plan: starter
-    schedule: "*/30 * * * *"
+    # Render cron uses UTC. These four UTC hours cover the 20:00 and 10:30
+    # Vancouver windows in both daylight and standard time, with one retry slot.
+    schedule: "0,30 3,4,17,18 * * *"
     buildCommand: echo "No build step required"
     startCommand: python3 guesty_cleaning_report.py --mode schedule
     envVars:
@@ -102,6 +104,12 @@ services:
           property: connectionString
       - key: CLEANING_STATE_KEY_PREFIX
         value: "guesty-cleaning"
+      - key: GUESTY_API_RETRY_ATTEMPTS
+        value: "5"
+      - key: GUESTY_API_RETRY_BASE_SECONDS
+        value: "20"
+      - key: GUESTY_API_RETRY_MAX_SECONDS
+        value: "180"
       - key: CLEANING_SMTP_HOST
         value: "smtp.gmail.com"
       - key: CLEANING_SMTP_PORT

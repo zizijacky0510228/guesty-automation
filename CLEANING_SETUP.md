@@ -5,14 +5,22 @@ the Mac being awake or online.
 
 ## Schedule
 
-Render runs `guesty-cleaning-cloud-scheduler` every 30 minutes:
+Render runs `guesty-cleaning-cloud-scheduler` only around the two Vancouver
+local-time windows. Because Render cron uses UTC, the Blueprint schedule covers
+both daylight and standard time:
+
+```cron
+0,30 3,4,17,18 * * *
+```
+
+The cron runs this command:
 
 ```bash
 python3 guesty_cleaning_report.py --mode schedule
 ```
 
-The script uses `REPORT_TIMEZONE=America/Vancouver` and only performs work in
-these local-time windows:
+The script uses `REPORT_TIMEZONE=America/Vancouver` and still only performs
+work in these local-time windows:
 
 - `20:00`: generate tomorrow's cleaning report, send it, and save the baseline snapshot for that report date.
 - `10:30`: generate today's current cleaning set and compare it with the previous 20:00 baseline. If anything changed, send a cleaning update.
