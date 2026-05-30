@@ -47,3 +47,17 @@ python3 guesty_automation.py send --conversation-id CONVERSATION_ID --body "Repl
 ```
 
 To actually send, `GUESTY_SEND_ENABLED=true` must be set in `.env` and the command must include `--confirm-send`.
+
+## Cleaning Reports
+
+The cleaning report now runs in Render as `guesty-cleaning-cloud-scheduler`.
+Render wakes it only around the configured Vancouver-time windows:
+
+```bash
+python3 guesty_cleaning_report.py --mode schedule
+```
+
+- 20:00: send tomorrow's cleaning report and save the baseline snapshot.
+- 10:30: compare today's current cleaning set against the previous 20:00 baseline and send an update only when something changed.
+
+The baseline snapshot is stored in Render Key Value via `CLEANING_STATE_REDIS_URL`.

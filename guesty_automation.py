@@ -125,16 +125,55 @@ def request_json(
     body: bytes | None = None,
     timeout: int = 30,
 ) -> Any:
-    req = urllib.request.Request(url=url, method=method, headers=headers or {}, data=body)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise GuestyError(f"Guesty API HTTP {exc.code}: {raw}") from exc
-    except urllib.error.URLError as exc:
-        raise GuestyError(f"Guesty API request failed: {exc.reason}") from exc
+    max_attempts = max(1, int(os.getenv("GUESTY_API_RETRY_ATTEMPTS", "3") or "3"))
+    base_delay = max(1.0, float(os.getenv("GUESTY_API_RETRY_BASE_SECONDS", "10") or "10"))
+    max_delay = max(base_delay, float(os.getenv("GUESTY_API_RETRY_MAX_SECONDS", "120") or "120"))
+    method_name = method.upper()
+    safe_to_retry = method_name == "GET" or "oauth2/token" in url
+
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(url=url, method=method, headers=headers or {}, data=body)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if safe_to_retry and exc.code in {429, 500, 502, 503, 504} and attempt < max_attempts:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                exponential_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                try:
+                    retry_after_delay = float(retry_after) if retry_after else exponential_delay
+                except ValueError:
+                    retry_after_delay = exponential_delay
+                delay = min(max_delay, max(1.0, retry_after_delay))
+                if retry_after and retry_after_delay > max_delay:
+                    print(
+                        f"Guesty API HTTP {exc.code}; Retry-After {retry_after_delay:.0f}s "
+                        f"exceeds cap {max_delay:.0f}s",
+                        file=sys.stderr,
+                    )
+                print(
+                    f"Guesty API HTTP {exc.code}; retrying in {delay:.0f}s "
+                    f"(attempt {attempt + 1}/{max_attempts})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise GuestyError(f"Guesty API HTTP {exc.code}: {raw}") from exc
+        except urllib.error.URLError as exc:
+            if safe_to_retry and attempt < max_attempts:
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                print(
+                    f"Guesty API request failed; retrying in {delay:.0f}s "
+                    f"(attempt {attempt + 1}/{max_attempts})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise GuestyError(f"Guesty API request failed: {exc.reason}") from exc
+
+    raise GuestyError("Guesty API request failed after retries.")
 
 
 @dataclass
