@@ -141,10 +141,18 @@ def request_json(
             raw = exc.read().decode("utf-8", errors="replace")
             if safe_to_retry and exc.code in {429, 500, 502, 503, 504} and attempt < max_attempts:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                exponential_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
                 try:
-                    delay = float(retry_after) if retry_after else min(max_delay, base_delay * (2 ** (attempt - 1)))
+                    retry_after_delay = float(retry_after) if retry_after else exponential_delay
                 except ValueError:
-                    delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                    retry_after_delay = exponential_delay
+                delay = min(max_delay, max(1.0, retry_after_delay))
+                if retry_after and retry_after_delay > max_delay:
+                    print(
+                        f"Guesty API HTTP {exc.code}; Retry-After {retry_after_delay:.0f}s "
+                        f"exceeds cap {max_delay:.0f}s",
+                        file=sys.stderr,
+                    )
                 print(
                     f"Guesty API HTTP {exc.code}; retrying in {delay:.0f}s "
                     f"(attempt {attempt + 1}/{max_attempts})",
