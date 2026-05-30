@@ -648,8 +648,16 @@ def run_schedule(args: argparse.Namespace, store: StateStore, client: GuestyClie
         scheduled_args = argparse.Namespace(
             **{**vars(args), "mode": "delta", "date": delta_date.isoformat(), "day_offset": None}
         )
-        outputs.append(run_delta(scheduled_args, store, client))
-        store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
+        if store.get_json(snapshot_key(delta_date)):
+            outputs.append(run_delta(scheduled_args, store, client))
+            store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
+        else:
+            missing_done_key = last_run_key("delta-missing-baseline", delta_date)
+            if args.force_schedule or not store.get_text(missing_done_key):
+                outputs.append(run_delta(scheduled_args, store, client))
+                store.set_text(missing_done_key, datetime.now(report_timezone()).isoformat())
+            else:
+                outputs.append(f"Missing baseline already reported for {delta_date.isoformat()}")
 
     if outputs:
         return "\n\n---\n\n".join(outputs)
