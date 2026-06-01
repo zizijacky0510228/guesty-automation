@@ -22,6 +22,7 @@ Important behavior:
 
 - Only handles property/listing nicknames containing `3505`, `383`, `2171`, `6550`, `2030`, or `5553`.
 - Ignores out-of-scope properties completely.
+- Replies only when Guesty sends a `reservation.messageReceived` webhook; backstop polling is disabled by default.
 - Dry-runs guest replies by default.
 - With `GUESTY_AI_REPLY_ENABLED=true`, reads the latest guest message, conversation history, owner rules, and any local reply style/examples before deciding whether to send or email the owner.
 - Set `GUESTY_WEBHOOK_SEND_ENABLED=true` only after deployment testing.
