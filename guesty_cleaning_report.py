@@ -716,38 +716,22 @@ def run_schedule(args: argparse.Namespace, store: StateStore, client: GuestyClie
             else:
                 store.set_text(baseline_done_key, datetime.now(report_timezone()).isoformat())
 
-    delta_date = now.date()
-    delta_due = inside_window(
-        now,
-        int_env("CLEANING_DELTA_HOUR", 10, 0, 23),
-        int_env("CLEANING_DELTA_MINUTE", 30, 0, 59),
-        window,
-    )
-    delta_done_key = last_run_key("delta", delta_date)
-    if delta_due and (args.force_schedule or not store.get_text(delta_done_key)):
-        scheduled_args = argparse.Namespace(
-            **{**vars(args), "mode": "delta", "date": delta_date.isoformat(), "day_offset": None}
+    if bool_env("CLEANING_DELTA_ENABLED", default=True):
+        delta_date = now.date()
+        delta_due = inside_window(
+            now,
+            int_env("CLEANING_DELTA_HOUR", 10, 0, 23),
+            int_env("CLEANING_DELTA_MINUTE", 30, 0, 59),
+            window,
         )
-        rate_limit = guesty_rate_limit_state(store)
-        if rate_limit:
-            body = rate_limit_message(rate_limit, delta_date, "delta")
-            outputs.append(body)
-            maybe_alert_once(
-                store,
-                last_run_key("delta-rate-limit-alert", delta_date),
-                f"清洁任务更新未检查 {delta_date.isoformat()}",
-                body,
-                scheduled_args,
+        delta_done_key = last_run_key("delta", delta_date)
+        if delta_due and (args.force_schedule or not store.get_text(delta_done_key)):
+            scheduled_args = argparse.Namespace(
+                **{**vars(args), "mode": "delta", "date": delta_date.isoformat(), "day_offset": None}
             )
-        elif store.get_json(snapshot_key(delta_date)):
-            try:
-                outputs.append(run_delta(scheduled_args, store, client))
-            except GuestyError as exc:
-                retry_after = retry_after_seconds_from_error(exc)
-                if retry_after is None:
-                    raise
-                rate_limit = set_guesty_rate_limit_state(store, retry_after, "delta")
-                body = f"{rate_limit_message(rate_limit, delta_date, 'delta')}\n\n{exc}"
+            rate_limit = guesty_rate_limit_state(store)
+            if rate_limit:
+                body = rate_limit_message(rate_limit, delta_date, "delta")
                 outputs.append(body)
                 maybe_alert_once(
                     store,
@@ -756,15 +740,32 @@ def run_schedule(args: argparse.Namespace, store: StateStore, client: GuestyClie
                     body,
                     scheduled_args,
                 )
+            elif store.get_json(snapshot_key(delta_date)):
+                try:
+                    outputs.append(run_delta(scheduled_args, store, client))
+                except GuestyError as exc:
+                    retry_after = retry_after_seconds_from_error(exc)
+                    if retry_after is None:
+                        raise
+                    rate_limit = set_guesty_rate_limit_state(store, retry_after, "delta")
+                    body = f"{rate_limit_message(rate_limit, delta_date, 'delta')}\n\n{exc}"
+                    outputs.append(body)
+                    maybe_alert_once(
+                        store,
+                        last_run_key("delta-rate-limit-alert", delta_date),
+                        f"清洁任务更新未检查 {delta_date.isoformat()}",
+                        body,
+                        scheduled_args,
+                    )
+                else:
+                    store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
             else:
-                store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
-        else:
-            missing_done_key = last_run_key("delta-missing-baseline", delta_date)
-            if args.force_schedule or not store.get_text(missing_done_key):
-                outputs.append(run_delta(scheduled_args, store, client))
-                store.set_text(missing_done_key, datetime.now(report_timezone()).isoformat())
-            else:
-                outputs.append(f"Missing baseline already reported for {delta_date.isoformat()}")
+                missing_done_key = last_run_key("delta-missing-baseline", delta_date)
+                if args.force_schedule or not store.get_text(missing_done_key):
+                    outputs.append(run_delta(scheduled_args, store, client))
+                    store.set_text(missing_done_key, datetime.now(report_timezone()).isoformat())
+                else:
+                    outputs.append(f"Missing baseline already reported for {delta_date.isoformat()}")
 
     if outputs:
         return "\n\n---\n\n".join(outputs)
