@@ -153,6 +153,10 @@ def request_json(
                         f"exceeds cap {max_delay:.0f}s",
                         file=sys.stderr,
                     )
+                    raise GuestyError(
+                        f"Guesty API HTTP {exc.code}: Retry-After {retry_after_delay:.0f}s "
+                        f"exceeds retry cap {max_delay:.0f}s; not retrying. {raw}"
+                    ) from exc
                 print(
                     f"Guesty API HTTP {exc.code}; retrying in {delay:.0f}s "
                     f"(attempt {attempt + 1}/{max_attempts})",

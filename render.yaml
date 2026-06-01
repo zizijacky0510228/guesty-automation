@@ -97,6 +97,8 @@ services:
         value: "jacky.s@zhanhongltd.com,info@zhanhongltd.com"
       - key: CLEANING_ALERT_ON_MISSING_BASELINE
         value: "true"
+      - key: CLEANING_SCHEDULE_WINDOW_MINUTES
+        value: "10"
       - key: CLEANING_STATE_REDIS_URL
         fromService:
           type: keyvalue
