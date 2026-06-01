@@ -502,6 +502,58 @@ def last_run_key(mode: str, report_date: date) -> str:
     return f"last-run:{mode}:{report_date.isoformat()}"
 
 
+def guesty_rate_limit_key() -> str:
+    return "guesty-api-rate-limit"
+
+
+def retry_after_seconds_from_error(error: Exception) -> float | None:
+    match = re.search(r"Retry-After\s+(\d+(?:\.\d+)?)s", str(error))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def guesty_rate_limit_state(store: StateStore) -> dict[str, Any] | None:
+    state = store.get_json(guesty_rate_limit_key())
+    if not state:
+        return None
+    until_epoch = state.get("until_epoch")
+    if not isinstance(until_epoch, (int, float)) or until_epoch <= time.time():
+        return None
+    return state
+
+
+def set_guesty_rate_limit_state(store: StateStore, retry_after_seconds: float, source: str) -> dict[str, Any]:
+    until_epoch = time.time() + max(1.0, retry_after_seconds)
+    state = {
+        "source": source,
+        "retry_after_seconds": retry_after_seconds,
+        "until_epoch": until_epoch,
+        "created_at": datetime.now(report_timezone()).isoformat(),
+    }
+    store.set_json(guesty_rate_limit_key(), state)
+    return state
+
+
+def rate_limit_message(state: dict[str, Any], target_date: date, action_name: str) -> str:
+    until = datetime.fromtimestamp(float(state["until_epoch"]), report_timezone())
+    return (
+        f"Cleaning {action_name} skipped for {target_date.isoformat()}.\n\n"
+        f"Guesty API is rate-limited until {until.isoformat()}. "
+        "The cloud job will not call Guesty again during this cooldown."
+    )
+
+
+def maybe_alert_once(store: StateStore, key: str, subject: str, body: str, args: argparse.Namespace) -> None:
+    if store.get_text(key):
+        return
+    maybe_notify(subject, body, args)
+    store.set_text(key, datetime.now(report_timezone()).isoformat())
+
+
 def send_email(subject: str, body: str) -> None:
     host = first_env("CLEANING_SMTP_HOST", "SMTP_HOST", "GUESTY_ALERT_SMTP_HOST")
     port = int(first_env("CLEANING_SMTP_PORT", "SMTP_PORT", "GUESTY_ALERT_SMTP_PORT", default="587"))
@@ -633,8 +685,36 @@ def run_schedule(args: argparse.Namespace, store: StateStore, client: GuestyClie
         scheduled_args = argparse.Namespace(
             **{**vars(args), "mode": "baseline", "date": baseline_date.isoformat(), "day_offset": None}
         )
-        outputs.append(run_report(scheduled_args, store, client, default_offset=1))
-        store.set_text(baseline_done_key, datetime.now(report_timezone()).isoformat())
+        rate_limit = guesty_rate_limit_state(store)
+        if rate_limit:
+            body = rate_limit_message(rate_limit, baseline_date, "baseline")
+            outputs.append(body)
+            maybe_alert_once(
+                store,
+                last_run_key("baseline-rate-limit-alert", baseline_date),
+                f"清洁任务未发送 {baseline_date.isoformat()}",
+                body,
+                scheduled_args,
+            )
+        else:
+            try:
+                outputs.append(run_report(scheduled_args, store, client, default_offset=1))
+            except GuestyError as exc:
+                retry_after = retry_after_seconds_from_error(exc)
+                if retry_after is None:
+                    raise
+                rate_limit = set_guesty_rate_limit_state(store, retry_after, "baseline")
+                body = f"{rate_limit_message(rate_limit, baseline_date, 'baseline')}\n\n{exc}"
+                outputs.append(body)
+                maybe_alert_once(
+                    store,
+                    last_run_key("baseline-rate-limit-alert", baseline_date),
+                    f"清洁任务未发送 {baseline_date.isoformat()}",
+                    body,
+                    scheduled_args,
+                )
+            else:
+                store.set_text(baseline_done_key, datetime.now(report_timezone()).isoformat())
 
     delta_date = now.date()
     delta_due = inside_window(
@@ -648,9 +728,36 @@ def run_schedule(args: argparse.Namespace, store: StateStore, client: GuestyClie
         scheduled_args = argparse.Namespace(
             **{**vars(args), "mode": "delta", "date": delta_date.isoformat(), "day_offset": None}
         )
-        if store.get_json(snapshot_key(delta_date)):
-            outputs.append(run_delta(scheduled_args, store, client))
-            store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
+        rate_limit = guesty_rate_limit_state(store)
+        if rate_limit:
+            body = rate_limit_message(rate_limit, delta_date, "delta")
+            outputs.append(body)
+            maybe_alert_once(
+                store,
+                last_run_key("delta-rate-limit-alert", delta_date),
+                f"清洁任务更新未检查 {delta_date.isoformat()}",
+                body,
+                scheduled_args,
+            )
+        elif store.get_json(snapshot_key(delta_date)):
+            try:
+                outputs.append(run_delta(scheduled_args, store, client))
+            except GuestyError as exc:
+                retry_after = retry_after_seconds_from_error(exc)
+                if retry_after is None:
+                    raise
+                rate_limit = set_guesty_rate_limit_state(store, retry_after, "delta")
+                body = f"{rate_limit_message(rate_limit, delta_date, 'delta')}\n\n{exc}"
+                outputs.append(body)
+                maybe_alert_once(
+                    store,
+                    last_run_key("delta-rate-limit-alert", delta_date),
+                    f"清洁任务更新未检查 {delta_date.isoformat()}",
+                    body,
+                    scheduled_args,
+                )
+            else:
+                store.set_text(delta_done_key, datetime.now(report_timezone()).isoformat())
         else:
             missing_done_key = last_run_key("delta-missing-baseline", delta_date)
             if args.force_schedule or not store.get_text(missing_done_key):

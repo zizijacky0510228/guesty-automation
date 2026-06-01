@@ -61,3 +61,6 @@ python3 guesty_cleaning_report.py --mode schedule
 - 10:30: compare today's current cleaning set against the previous 20:00 baseline and send an update only when something changed.
 
 The baseline snapshot is stored in Render Key Value via `CLEANING_STATE_REDIS_URL`.
+If Guesty returns a long `Retry-After` rate limit, the cleaning cron stores a
+cooldown in the same state store and skips later cleaning runs until Guesty says
+it is safe to try again.

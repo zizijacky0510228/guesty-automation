@@ -20,7 +20,7 @@ python3 guesty_cleaning_report.py --mode schedule
 ```
 
 The script uses `REPORT_TIMEZONE=America/Vancouver` and still only performs
-work in these local-time windows:
+work during the first 10 minutes of these local-time windows:
 
 - `20:00`: generate tomorrow's cleaning report, send it, and save the baseline snapshot for that report date.
 - `10:30`: generate today's current cleaning set and compare it with the previous 20:00 baseline. If anything changed, send a cleaning update.
@@ -31,6 +31,11 @@ The 10:30 comparison reports:
 - Removed cleaning
 - New turnover cleaning
 - No longer turnover cleaning
+
+If Guesty returns a long `Retry-After` rate limit, the cron saves a cooldown
+marker in Render Key Value and skips later cleaning runs until that cooldown
+expires. This avoids repeated Guesty API calls while the account or cloud IP is
+rate-limited.
 
 ## State
 
@@ -80,6 +85,7 @@ CLEANING_SMTP_USERNAME
 CLEANING_SMTP_PASSWORD
 CLEANING_EMAIL_FROM
 CLEANING_SMTP_STARTTLS=true
+CLEANING_SCHEDULE_WINDOW_MINUTES=10
 ```
 
 After the cloud cron is verified, disable the old local Mac `launchd`/Codex
