@@ -199,6 +199,7 @@ class GuestyClient:
         self.base_url = os.getenv("GUESTY_BASE_URL", "https://open-api.guesty.com/v1").rstrip("/")
         self.token_url = os.getenv("GUESTY_TOKEN_URL", "https://open-api.guesty.com/oauth2/token")
         self._token: Token | None = None
+        self._posts_cache: dict[str, list[dict[str, Any]]] = {}
 
     def token(self) -> Token:
         if self._token and self._token.is_fresh:
@@ -327,8 +328,12 @@ class GuestyClient:
         return []
 
     def posts(self, conversation_id: str) -> list[dict[str, Any]]:
+        if conversation_id in self._posts_cache:
+            return list(self._posts_cache[conversation_id])
         data = self.api("GET", f"/communication/conversations/{conversation_id}/posts")
-        return extract_items(data)
+        posts = extract_items(data)
+        self._posts_cache[conversation_id] = posts
+        return list(posts)
 
     def reservation(self, reservation_id: str, fields: str | None = None) -> dict[str, Any]:
         params = {"fields": fields} if fields else None
@@ -336,11 +341,13 @@ class GuestyClient:
         return data if isinstance(data, dict) else {}
 
     def send_message(self, conversation_id: str, body: str, module: dict[str, Any]) -> Any:
-        return self.api(
+        result = self.api(
             "POST",
             f"/communication/conversations/{conversation_id}/send-message",
             body={"module": module, "body": body},
         )
+        self._posts_cache.pop(conversation_id, None)
+        return result
 
     def webhooks(self) -> list[dict[str, Any]]:
         return extract_items(self.api("GET", "/webhooks"))

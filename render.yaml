@@ -28,6 +28,10 @@ services:
         value: "3"
       - key: GUESTY_AI_EXAMPLE_CHARS
         value: "280"
+      - key: GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT
+        value: "0"
+      - key: GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT
+        value: "10"
       - key: GUESTY_AI_OWNER_RULES_CHARS
         value: "3200"
       - key: GUESTY_AI_APPROVED_ANSWERS_CHARS
@@ -38,6 +42,8 @@ services:
         value: "900"
       - key: GUESTY_BACKSTOP_ENABLED
         value: "false"
+      - key: GUESTY_API_RATE_LIMIT_COOLDOWN_SECONDS
+        value: "3600"
       - key: OPENAI_MAX_COMPLETION_TOKENS
         value: "350"
       - key: OPENAI_API_KEY

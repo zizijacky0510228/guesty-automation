@@ -12,8 +12,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import smtplib
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -55,7 +57,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-webhook-only-2026-05-30"
+APP_VERSION = "webhook-ai-review-rate-limit-cooldown-2026-06-03"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -64,6 +66,9 @@ AI_SOFT_ESCALATION_REASONS = {"property_detail_or_setup", "unclear_or_unsupporte
 DEFAULT_AI_MODEL = "gpt-5.4-nano"
 RECENT_OWNER_EXAMPLE_CACHE: dict[str, Any] = {"expiresAt": 0.0, "rows": []}
 RECENT_OWNER_EXAMPLE_LOCK = threading.Lock()
+GUESTY_RATE_LIMIT: dict[str, Any] = {"until": 0.0, "message": ""}
+GUESTY_RATE_LIMIT_LOCK = threading.Lock()
+GUESTY_RETRY_AFTER_RE = re.compile(r"Retry-After\s+(\d+(?:\.\d+)?)s", re.IGNORECASE)
 CHECK_IN_REFERENCE_KEYWORDS = (
     "check-in",
     "check in",
@@ -104,6 +109,60 @@ def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = Non
     if maximum is not None:
         value = min(value, maximum)
     return value
+
+
+def guesty_rate_limit_fallback_seconds() -> int:
+    return env_int("GUESTY_API_RATE_LIMIT_COOLDOWN_SECONDS", 3600, 60, 86400)
+
+
+def parse_guesty_retry_after_seconds(message: str) -> float | None:
+    match = GUESTY_RETRY_AFTER_RE.search(message)
+    if not match:
+        return None
+    try:
+        return max(0.0, float(match.group(1)))
+    except ValueError:
+        return None
+
+
+def guesty_rate_limit_status() -> dict[str, Any]:
+    now = time.time()
+    with GUESTY_RATE_LIMIT_LOCK:
+        until = float(GUESTY_RATE_LIMIT.get("until") or 0)
+        message = str(GUESTY_RATE_LIMIT.get("message") or "")
+    remaining = max(0.0, until - now)
+    return {
+        "active": remaining > 0,
+        "until": until if remaining > 0 else 0,
+        "remainingSeconds": int(remaining),
+        "message": message if remaining > 0 else "",
+    }
+
+
+def guesty_rate_limit_active() -> bool:
+    return bool(guesty_rate_limit_status()["active"])
+
+
+def set_guesty_rate_limit_from_error(exc: GuestyError, source: str) -> bool:
+    message = str(exc)
+    if "HTTP 429" not in message and "TOO_MANY_REQUESTS" not in message:
+        return False
+
+    seconds = parse_guesty_retry_after_seconds(message)
+    if seconds is None or seconds <= 0:
+        seconds = float(guesty_rate_limit_fallback_seconds())
+    until = time.time() + seconds
+    with GUESTY_RATE_LIMIT_LOCK:
+        GUESTY_RATE_LIMIT["until"] = max(float(GUESTY_RATE_LIMIT.get("until") or 0), until)
+        GUESTY_RATE_LIMIT["message"] = message[:500]
+        active_until = float(GUESTY_RATE_LIMIT["until"])
+    until_text = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(active_until))
+    print(
+        f"Guesty API rate-limit cooldown active from {source} until {until_text}; "
+        "webhook will not call Guesty during cooldown.",
+        file=sys.stderr,
+    )
+    return True
 
 
 def load_processed_events() -> dict[str, Any]:
@@ -325,6 +384,8 @@ def historical_reply_examples(limit: int | None = None) -> list[dict[str, str]]:
 def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None = None) -> list[dict[str, str]]:
     if client is None:
         return []
+    if guesty_rate_limit_active():
+        return []
     if limit is None:
         limit = env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 12, 0, 20)
     if limit <= 0:
@@ -343,7 +404,8 @@ def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None =
 
     try:
         conversations = client.conversations(limit=scan_limit, unread_only=False)
-    except GuestyError:
+    except GuestyError as exc:
+        set_guesty_rate_limit_from_error(exc, "recent_owner_reply_examples.conversations")
         return []
 
     for conversation in conversations:
@@ -355,7 +417,9 @@ def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None =
             continue
         try:
             posts = sort_posts(client.posts(conversation_id_value))
-        except GuestyError:
+        except GuestyError as exc:
+            if set_guesty_rate_limit_from_error(exc, "recent_owner_reply_examples.posts"):
+                break
             continue
 
         last_guest_body = ""
@@ -409,10 +473,11 @@ def recent_owner_reply_examples(client: GuestyClient | None, limit: int | None =
 
 def conversation_history(client: GuestyClient | None, cid: str, payload: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    if client is not None and cid:
+    if client is not None and cid and not guesty_rate_limit_active():
         try:
             posts = sort_posts(client.posts(cid))
-        except GuestyError:
+        except GuestyError as exc:
+            set_guesty_rate_limit_from_error(exc, "conversation_history.posts")
             posts = []
         post_limit = env_int("GUESTY_AI_CONTEXT_POST_LIMIT", 8, 2, 24)
         body_chars = env_int("GUESTY_AI_HISTORY_BODY_CHARS", 700, 160, 1600)
@@ -745,6 +810,59 @@ def send_alert_email(body: str) -> None:
     )
 
 
+def rate_limit_owner_summary(status: dict[str, Any]) -> str:
+    until = float(status.get("until") or 0)
+    remaining = int(status.get("remainingSeconds") or 0)
+    until_text = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(until)) if until else "unknown"
+    return (
+        f"Guesty API is rate-limited until {until_text} "
+        f"(about {max(1, (remaining + 59) // 60)} minutes remaining). "
+        "Automatic reply skipped without making more Guesty API calls. "
+        "Please review this message and reply manually in Guesty."
+    )
+
+
+def handle_guesty_rate_limited_payload(
+    payload: dict[str, Any],
+    signature: str,
+    processed: dict[str, Any],
+) -> dict[str, Any]:
+    status = guesty_rate_limit_status()
+    reasons = ["guesty_rate_limited"]
+    owner_summary = rate_limit_owner_summary(status)
+    alert_body = render_alert(payload, reasons, owner_summary)
+    append_alert(payload, reasons, owner_summary)
+    email_status = "disabled"
+    email_error = ""
+    if env_bool("GUESTY_ALERT_EMAIL_ENABLED", True):
+        try:
+            send_alert_email(alert_body)
+            email_status = "sent"
+        except GuestyError as exc:
+            email_status = "failed"
+            email_error = str(exc)
+            print(f"Guesty rate-limit alert email failed: {exc}", file=sys.stderr)
+
+    processed[signature] = {
+        "status": "guesty_rate_limited",
+        "reasons": reasons,
+        "email": email_status,
+        "emailError": email_error,
+        "rateLimitUntil": status.get("until"),
+        "processedAt": time.time(),
+    }
+    save_processed_events(processed)
+    return {
+        "status": "needs_owner_review",
+        "reason": "guesty_rate_limited",
+        "reasons": reasons,
+        "email": email_status,
+        "emailError": email_error,
+        "rateLimitUntil": status.get("until"),
+        "rateLimitRemainingSeconds": status.get("remainingSeconds"),
+    }
+
+
 def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     append_jsonl(EVENT_LOG, {"receivedAt": time.time(), "payload": payload})
 
@@ -758,9 +876,29 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if signature in processed:
         return {"status": "ignored", "reason": "duplicate"}
 
-    needs_client = not property_scope_text(payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {})
+    conversation = payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {}
+    payload_scope_text = property_scope_text(conversation)
+    if payload_scope_text and not matches_scope_text(payload_scope_text):
+        processed[signature] = {"status": "ignored", "reason": "out_of_scope", "processedAt": time.time()}
+        save_processed_events(processed)
+        return {
+            "status": "ignored",
+            "reason": "out_of_scope",
+            "allowedTokens": allowed_property_tokens(),
+            "scopeText": payload_scope_text,
+        }
+
+    if guesty_rate_limit_active():
+        return handle_guesty_rate_limited_payload(payload, signature, processed)
+
+    needs_client = not payload_scope_text
     client = GuestyClient() if needs_client else None
-    scope_text = webhook_scope_text(client, payload)
+    try:
+        scope_text = webhook_scope_text(client, payload)
+    except GuestyError as exc:
+        if set_guesty_rate_limit_from_error(exc, "webhook_scope_text"):
+            return handle_guesty_rate_limited_payload(payload, signature, processed)
+        raise
     if not matches_scope_text(scope_text):
         processed[signature] = {"status": "ignored", "reason": "out_of_scope", "processedAt": time.time()}
         save_processed_events(processed)
@@ -842,18 +980,27 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         save_processed_events(processed)
         return {"status": "dry_run_reply", "reply": reply, "confidence": decision.get("confidence")}
 
-    if client is None:
-        client = GuestyClient()
-    if not cid:
-        raise GuestyError("Webhook payload is missing conversation ID.")
-    assert_guest_is_waiting(client, cid)
-    module = deep_get(payload, "message.module")
-    if not isinstance(module, dict):
-        module = client.infer_message_module(cid)
-    if not isinstance(module, dict):
-        raise GuestyError("Could not infer Guesty send module from webhook payload.")
+    if guesty_rate_limit_active():
+        return handle_guesty_rate_limited_payload(payload, signature, processed)
 
-    client.send_message(cid, reply, sanitize_send_module(module))
+    try:
+        if client is None:
+            client = GuestyClient()
+        if not cid:
+            raise GuestyError("Webhook payload is missing conversation ID.")
+        assert_guest_is_waiting(client, cid)
+        module = deep_get(payload, "message.module")
+        if not isinstance(module, dict):
+            module = client.infer_message_module(cid)
+        if not isinstance(module, dict):
+            raise GuestyError("Could not infer Guesty send module from webhook payload.")
+
+        client.send_message(cid, reply, sanitize_send_module(module))
+    except GuestyError as exc:
+        if set_guesty_rate_limit_from_error(exc, "webhook_send_reply"):
+            return handle_guesty_rate_limited_payload(payload, signature, processed)
+        raise
+
     processed[signature] = {
         "status": "sent",
         "reply": reply,
@@ -895,13 +1042,23 @@ def backstop_payload(conversation: dict[str, Any], latest_guest: dict[str, Any])
 
 
 def process_backstop_once() -> dict[str, Any]:
+    if guesty_rate_limit_active():
+        return {"checked": 0, "handled": [], "errors": [], "skipped": "guesty_rate_limited"}
+
     client = GuestyClient()
     limit = env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300)
     checked = 0
     handled: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 
-    for conversation in client.conversations(limit=limit, unread_only=False):
+    try:
+        conversations = client.conversations(limit=limit, unread_only=False)
+    except GuestyError as exc:
+        if set_guesty_rate_limit_from_error(exc, "backstop.conversations"):
+            return {"checked": 0, "handled": [], "errors": [], "skipped": "guesty_rate_limited"}
+        raise
+
+    for conversation in conversations:
         conversation_id_value = str(conversation.get("_id") or conversation.get("id") or "")
         if not conversation_id_value:
             continue
@@ -922,6 +1079,9 @@ def process_backstop_once() -> dict[str, Any]:
                     }
                 )
         except Exception as exc:  # noqa: BLE001 - keep one bad conversation from stopping the sweep
+            if isinstance(exc, GuestyError) and set_guesty_rate_limit_from_error(exc, "backstop.posts"):
+                errors.append({"conversationId": conversation_id_value, "error": str(exc)})
+                break
             errors.append({"conversationId": conversation_id_value, "error": str(exc)})
 
     return {"checked": checked, "handled": handled, "errors": errors}
@@ -957,6 +1117,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/health":
+            rate_limit_status = guesty_rate_limit_status()
             self.write_json(
                 200,
                 {
@@ -977,6 +1138,7 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                     "backstopConversationLimit": env_int("GUESTY_BACKSTOP_CONVERSATION_LIMIT", 50, 5, 300),
                     "recentOwnerExampleLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_LIMIT", 12, 0, 20),
                     "recentOwnerExampleScanLimit": env_int("GUESTY_AI_RECENT_OWNER_EXAMPLE_SCAN_LIMIT", 100, 5, 200),
+                    "guestyRateLimit": rate_limit_status,
                     "aiEscalationMode": "hard_restrictions_only",
                     "humanActionRequestsEscalate": True,
                 },
