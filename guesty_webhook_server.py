@@ -57,7 +57,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-ai-review-rate-limit-cooldown-2026-06-03"
+APP_VERSION = "webhook-disabled-no-guesty-calls-2026-07-16"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -529,6 +529,14 @@ def ai_reply_enabled() -> bool:
     return env_bool("GUESTY_AI_REPLY_ENABLED", False)
 
 
+def webhook_send_enabled() -> bool:
+    return env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False)
+
+
+def webhook_automation_disabled() -> bool:
+    return not webhook_send_enabled() and not ai_reply_enabled()
+
+
 def openai_model() -> str:
     return os.getenv("OPENAI_MODEL", DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL
 
@@ -876,6 +884,15 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if signature in processed:
         return {"status": "ignored", "reason": "duplicate"}
 
+    if webhook_automation_disabled():
+        processed[signature] = {
+            "status": "ignored",
+            "reason": "webhook_automation_disabled",
+            "processedAt": time.time(),
+        }
+        save_processed_events(processed)
+        return {"status": "ignored", "reason": "webhook_automation_disabled"}
+
     conversation = payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {}
     payload_scope_text = property_scope_text(conversation)
     if payload_scope_text and not matches_scope_text(payload_scope_text):
@@ -970,7 +987,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "confidence": decision.get("confidence"),
         }
 
-    if not env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False):
+    if not webhook_send_enabled():
         processed[signature] = {
             "status": "dry_run_reply",
             "reply": reply,
@@ -1123,9 +1140,10 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "version": APP_VERSION,
-                    "sendEnabled": env_bool("GUESTY_WEBHOOK_SEND_ENABLED", False),
+                    "sendEnabled": webhook_send_enabled(),
                     "alertEmailEnabled": env_bool("GUESTY_ALERT_EMAIL_ENABLED", True),
                     "aiReplyEnabled": ai_reply_enabled(),
+                    "webhookAutomationDisabled": webhook_automation_disabled(),
                     "aiConfigured": openai_configured(),
                     "aiModel": openai_model(),
                     "propertyScopeTokens": allowed_property_tokens(),
