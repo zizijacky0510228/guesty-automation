@@ -129,6 +129,20 @@ def requested_date(query: dict[str, list[str]]) -> str:
         return today_iso()
 
 
+def requested_lang(query: dict[str, list[str]]) -> str:
+    return "en" if first_query(query, "lang").lower() == "en" else "zh"
+
+
+def admin_page_url(view: str, token: str, task_date: str, lang: str) -> str:
+    paths = {
+        "tasks": "/cleaning/admin",
+        "cleaners": "/cleaning/admin/cleaners",
+        "rules": "/cleaning/admin/rules",
+    }
+    query = urlencode({"token": token, "date": task_date, "lang": lang})
+    return f"{paths.get(view, paths['tasks'])}?{query}"
+
+
 def task_id(task_date: str, address: str, listing_id: str = "") -> str:
     raw = "|".join([task_date, clean_text(listing_id, 120).lower(), clean_text(address, 240).lower()])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -690,10 +704,30 @@ def handle_cleaning_request(method: str, raw_path: str, headers: dict[str, str],
     if method == "GET":
         if path == "/cleaning":
             return redirect_response("/cleaning/admin")
-        if path == "/cleaning/admin":
-            return html_response(render_admin_page(first_query(query, "token"), requested_date(query)))
+        admin_views = {
+            "/cleaning/admin": "tasks",
+            "/cleaning/admin/tasks": "tasks",
+            "/cleaning/admin/cleaners": "cleaners",
+            "/cleaning/admin/rules": "rules",
+        }
+        if path in admin_views:
+            return html_response(
+                render_admin_page(
+                    first_query(query, "token"),
+                    requested_date(query),
+                    requested_lang(query),
+                    admin_views[path],
+                )
+            )
         if path == "/cleaning/worker":
-            return html_response(render_worker_page(first_query(query, "cleaner"), first_query(query, "token"), requested_date(query)))
+            return html_response(
+                render_worker_page(
+                    first_query(query, "cleaner"),
+                    first_query(query, "token"),
+                    requested_date(query),
+                    requested_lang(query),
+                )
+            )
         return handle_api_get(path, query, headers)
     if method == "POST":
         return handle_api_post(path, query, headers, body)
@@ -701,8 +735,9 @@ def handle_cleaning_request(method: str, raw_path: str, headers: dict[str, str],
 
 
 def page_shell(title: str, body: str, config: dict[str, Any], script: str) -> str:
+    doc_lang = "en" if config.get("lang") == "en" else "zh-CN"
     return f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="{doc_lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -746,7 +781,27 @@ def page_shell(title: str, body: str, config: dict[str, Any], script: str) -> st
     main {{ max-width: 1180px; margin: 0 auto; padding: 18px; }}
     .toolbar {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
     .grid {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }}
-    .admin-grid {{ grid-template-columns: 280px minmax(0, 1fr); align-items: start; }}
+    .admin-grid {{ grid-template-columns: minmax(0, 1fr); align-items: start; }}
+    .nav {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .nav-link {{
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 7px 11px;
+      text-decoration: none;
+      font-weight: 650;
+    }}
+    .nav-link.active {{ background: #e7f5f2; border-color: #9ed8cf; color: var(--accent); }}
     section, dialog {{
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -828,6 +883,8 @@ def page_shell(title: str, body: str, config: dict[str, Any], script: str) -> st
       .admin-grid, .task, .worker-task, .two {{ grid-template-columns: 1fr; }}
       .toolbar {{ align-items: stretch; }}
       .toolbar > * {{ flex: 1 1 160px; }}
+      .nav {{ align-items: stretch; }}
+      .nav > * {{ flex: 1 1 140px; }}
     }}
   </style>
 </head>
@@ -843,88 +900,297 @@ def page_shell(title: str, body: str, config: dict[str, Any], script: str) -> st
 </html>"""
 
 
-def render_admin_page(token: str, task_date: str) -> str:
-    body = {
-        "header": """
-          <label>日期<input id="dateInput" type="date"></label>
-          <button class="primary" id="reloadBtn">刷新</button>
-          <a class="top-link" href="/cleaning/worker">清洁员入口</a>
-        """,
-        "main": """
+def render_admin_page(token: str, task_date: str, lang: str, view: str) -> str:
+    lang = "en" if lang == "en" else "zh"
+    view = view if view in {"tasks", "cleaners", "rules"} else "tasks"
+    text = {
+        "zh": {
+            "title": "清洁任务后台",
+            "date": "日期",
+            "reload": "刷新",
+            "tasks": "任务分配",
+            "cleaners": "清洁员",
+            "rules": "自动分配规则",
+            "worker": "清洁员入口",
+            "switch": "English",
+            "add_task": "新增任务",
+            "name": "姓名",
+            "add_cleaner": "新增清洁员",
+            "rule_name": "地址组名称",
+            "rule_match": "匹配地址",
+            "rule_placeholder": "1348 或 1348,1346",
+            "assign_to": "分配给",
+            "add_rule": "新增规则",
+            "apply_rules": "套用到未分配任务",
+        },
+        "en": {
+            "title": "Cleaning Admin",
+            "date": "Date",
+            "reload": "Refresh",
+            "tasks": "Task Assignments",
+            "cleaners": "Cleaners",
+            "rules": "Auto Rules",
+            "worker": "Worker Entry",
+            "switch": "中文",
+            "add_task": "Add Task",
+            "name": "Name",
+            "add_cleaner": "Add Cleaner",
+            "rule_name": "Group Name",
+            "rule_match": "Match Address",
+            "rule_placeholder": "1348 or 1348,1346",
+            "assign_to": "Assign To",
+            "add_rule": "Add Rule",
+            "apply_rules": "Apply to Unassigned Tasks",
+        },
+    }[lang]
+    nav_items = [
+        ("tasks", text["tasks"]),
+        ("cleaners", text["cleaners"]),
+        ("rules", text["rules"]),
+    ]
+    nav_links = "\n".join(
+        f'<a class="nav-link {"active" if key == view else ""}" data-admin-view="{key}" href="{html.escape(admin_page_url(key, token, task_date, lang))}">{html.escape(label)}</a>'
+        for key, label in nav_items
+    )
+    header = f"""
+          <nav class="nav">{nav_links}</nav>
+          <label>{html.escape(text['date'])}<input id="dateInput" type="date"></label>
+          <button class="primary" id="reloadBtn">{html.escape(text['reload'])}</button>
+          <button id="langToggle" type="button">{html.escape(text['switch'])}</button>
+          <a class="top-link" href="/cleaning/worker">{html.escape(text['worker'])}</a>
+        """
+    if view == "cleaners":
+        main = f"""
           <div class="grid admin-grid">
-            <div class="grid">
-              <section>
-                <h2>清洁员</h2>
-                <form id="addCleanerForm" class="row">
-                  <label>姓名<input id="newCleanerName" autocomplete="off"></label>
-                  <button class="primary" type="submit">新增清洁员</button>
-                </form>
-                <div id="cleanerList" class="list" style="margin-top:12px"></div>
-              </section>
-              <section>
-                <h2>自动分配规则</h2>
-                <form id="addRuleForm" class="row">
-                  <label>地址组名称<input id="newRuleName" autocomplete="off" placeholder="1348"></label>
-                  <label>匹配地址<input id="newRuleMatch" autocomplete="off" placeholder="1348 或 1348,1346"></label>
-                  <label>分配给<select id="newRuleCleaner"></select></label>
-                  <button class="primary" type="submit">新增规则</button>
-                </form>
-                <button id="applyRulesBtn" type="button" style="width:100%;margin-top:10px">套用到未分配任务</button>
-                <div id="ruleList" class="list" style="margin-top:12px"></div>
-              </section>
-            </div>
+            <section>
+              <h2>{html.escape(text['cleaners'])}</h2>
+              <form id="addCleanerForm" class="row">
+                <label>{html.escape(text['name'])}<input id="newCleanerName" autocomplete="off"></label>
+                <button class="primary" type="submit">{html.escape(text['add_cleaner'])}</button>
+              </form>
+              <div id="message" class="muted" style="margin-top:10px"></div>
+              <div id="cleanerList" class="list" style="margin-top:12px"></div>
+            </section>
+          </div>
+        """
+    elif view == "rules":
+        main = f"""
+          <div class="grid admin-grid">
+            <section>
+              <h2>{html.escape(text['rules'])}</h2>
+              <form id="addRuleForm" class="row">
+                <div class="two row">
+                  <label>{html.escape(text['rule_name'])}<input id="newRuleName" autocomplete="off" placeholder="1348"></label>
+                  <label>{html.escape(text['assign_to'])}<select id="newRuleCleaner"></select></label>
+                </div>
+                <label>{html.escape(text['rule_match'])}<input id="newRuleMatch" autocomplete="off" placeholder="{html.escape(text['rule_placeholder'])}"></label>
+                <div class="toolbar">
+                  <button class="primary" type="submit">{html.escape(text['add_rule'])}</button>
+                  <button id="applyRulesBtn" type="button">{html.escape(text['apply_rules'])}</button>
+                </div>
+              </form>
+              <div id="message" class="muted" style="margin-top:10px"></div>
+              <div id="ruleList" class="list" style="margin-top:12px"></div>
+            </section>
+          </div>
+        """
+    else:
+        main = f"""
+          <div class="grid admin-grid">
             <section>
               <div class="toolbar" style="justify-content:space-between;margin-bottom:12px">
-                <h2>任务分配</h2>
-                <button class="primary" id="addTaskBtn">新增任务</button>
+                <h2>{html.escape(text['tasks'])}</h2>
+                <button class="primary" id="addTaskBtn">{html.escape(text['add_task'])}</button>
               </div>
               <div id="message" class="muted"></div>
               <div id="taskList" class="list" style="margin-top:10px"></div>
             </section>
           </div>
-        """,
-    }
-    return page_shell("清洁任务后台", body, {"token": token, "date": task_date}, ADMIN_SCRIPT)
-
-
-def render_worker_page(cleaner_id: str, token: str, task_date: str) -> str:
+        """
     body = {
-        "header": """
-          <label>日期<input id="dateInput" type="date"></label>
-          <button class="primary" id="reloadBtn">刷新</button>
+        "header": header,
+        "main": main,
+    }
+    return page_shell(text["title"], body, {"token": token, "date": task_date, "lang": lang, "view": view}, ADMIN_SCRIPT)
+
+
+def render_worker_page(cleaner_id: str, token: str, task_date: str, lang: str) -> str:
+    lang = "en" if lang == "en" else "zh"
+    text = {
+        "zh": {
+            "title": "我的清洁任务",
+            "date": "日期",
+            "reload": "刷新",
+            "switch": "English",
+            "tasks": "我的清洁任务",
+        },
+        "en": {
+            "title": "My Cleaning Tasks",
+            "date": "Date",
+            "reload": "Refresh",
+            "switch": "中文",
+            "tasks": "My Cleaning Tasks",
+        },
+    }[lang]
+    body = {
+        "header": f"""
+          <label>{html.escape(text['date'])}<input id="dateInput" type="date"></label>
+          <button class="primary" id="reloadBtn">{html.escape(text['reload'])}</button>
+          <button id="langToggle" type="button">{html.escape(text['switch'])}</button>
         """,
-        "main": """
+        "main": f"""
           <section>
             <div class="toolbar" style="justify-content:space-between;margin-bottom:12px">
-              <h2 id="workerTitle">我的清洁任务</h2>
+              <h2 id="workerTitle">{html.escape(text['tasks'])}</h2>
               <span id="message" class="muted"></span>
             </div>
             <div id="taskList" class="list"></div>
           </section>
         """,
     }
-    return page_shell("我的清洁任务", body, {"cleaner": cleaner_id, "token": token, "date": task_date}, WORKER_SCRIPT)
+    return page_shell(text["title"], body, {"cleaner": cleaner_id, "token": token, "date": task_date, "lang": lang}, WORKER_SCRIPT)
 
 
 ADMIN_SCRIPT = r"""
 const config = window.CLEANING_APP;
 const state = { cleaners: [], assignment_rules: [], tasks: [], statuses: {} };
-const qs = () => new URLSearchParams({ token: config.token || "", date: document.querySelector("#dateInput").value });
+const lang = config.lang === "en" ? "en" : "zh";
+const view = config.view || "tasks";
+const copy = {
+  zh: {
+    addTaskPrompt: "输入清洁地址",
+    allCleaners: "选择清洁员",
+    applyDone: "已套用 {count} 个未分配任务",
+    assigned: "已分配",
+    copied: "链接已复制",
+    copyLink: "复制链接",
+    deleteRuleConfirm: "删除这个规则？",
+    deleteTaskConfirm: "删除这个任务？",
+    emptyCleaners: "暂无清洁员",
+    emptyRules: "暂无规则",
+    emptyTasks: "暂无任务",
+    inactive: "停用",
+    matchAddress: "匹配地址",
+    nameLabel: "名称",
+    loadedCleaners: "已加载 {count} 个清洁员",
+    loadedRules: "已加载 {count} 条规则",
+    loadedTasks: "已加载 {count} 个任务",
+    loading: "读取中...",
+    manual: "manual",
+    noCleaner: "未分配",
+    ordinaryClean: "普通清洁",
+    refreshFailed: "读取失败",
+    resetLink: "重置链接",
+    assignTo: "分配给",
+    rule: "规则",
+    save: "保存",
+    sameDay: "同日入住",
+    sourceGuesty: "Guesty",
+    sourceManual: "手动",
+    status_assigned: "已分配",
+    status_done: "已完成",
+    status_in_progress: "进行中",
+    status_issue: "有问题",
+    status_unassigned: "未分配",
+    stop: "停用",
+    start: "启用",
+    unassignedOption: "未分配",
+    active: "启用",
+    delete: "删除",
+    note: "备注",
+  },
+  en: {
+    addTaskPrompt: "Enter the cleaning address",
+    allCleaners: "Select cleaner",
+    applyDone: "Applied rules to {count} unassigned task(s)",
+    assigned: "Assigned",
+    copied: "Link copied",
+    copyLink: "Copy Link",
+    deleteRuleConfirm: "Delete this rule?",
+    deleteTaskConfirm: "Delete this task?",
+    emptyCleaners: "No cleaners yet",
+    emptyRules: "No rules yet",
+    emptyTasks: "No tasks yet",
+    inactive: "Inactive",
+    matchAddress: "Match Address",
+    nameLabel: "Name",
+    loadedCleaners: "Loaded {count} cleaner(s)",
+    loadedRules: "Loaded {count} rule(s)",
+    loadedTasks: "Loaded {count} task(s)",
+    loading: "Loading...",
+    manual: "manual",
+    noCleaner: "Unassigned",
+    ordinaryClean: "Standard Clean",
+    refreshFailed: "Could not load",
+    resetLink: "Reset Link",
+    assignTo: "Assign To",
+    rule: "Rule",
+    save: "Save",
+    sameDay: "Same-day Turnover",
+    sourceGuesty: "Guesty",
+    sourceManual: "Manual",
+    status_assigned: "Assigned",
+    status_done: "Done",
+    status_in_progress: "In Progress",
+    status_issue: "Issue",
+    status_unassigned: "Unassigned",
+    stop: "Disable",
+    start: "Enable",
+    unassignedOption: "Unassigned",
+    active: "Active",
+    delete: "Delete",
+    note: "Notes",
+  },
+};
+const statusOrder = ["unassigned", "assigned", "in_progress", "done", "issue"];
+const adminPaths = { tasks: "/cleaning/admin", cleaners: "/cleaning/admin/cleaners", rules: "/cleaning/admin/rules" };
+const t = (key) => copy[lang][key] || copy.zh[key] || key;
+const fmt = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+const qs = () => new URLSearchParams({ token: config.token || "", date: document.querySelector("#dateInput").value, lang });
 const api = () => `/api/cleaning/admin?${qs().toString()}`;
 const el = (id) => document.querySelector(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
-const say = (text, error=false) => { el("#message").textContent = text; el("#message").className = error ? "error" : "muted"; };
+const say = (text, error=false) => {
+  const message = el("#message");
+  if (!message) return;
+  message.textContent = text;
+  message.className = error ? "error" : "muted";
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   el("#dateInput").value = config.date;
   el("#reloadBtn").addEventListener("click", load);
-  el("#dateInput").addEventListener("change", load);
-  el("#addCleanerForm").addEventListener("submit", addCleaner);
-  el("#addRuleForm").addEventListener("submit", addRule);
-  el("#applyRulesBtn").addEventListener("click", applyRules);
-  el("#addTaskBtn").addEventListener("click", () => saveTask({ address: prompt("输入清洁地址") || "" }));
+  el("#dateInput").addEventListener("change", () => {
+    updateAdminLinks();
+    load();
+  });
+  el("#langToggle").addEventListener("click", switchLang);
+  if (el("#addCleanerForm")) el("#addCleanerForm").addEventListener("submit", addCleaner);
+  if (el("#addRuleForm")) el("#addRuleForm").addEventListener("submit", addRule);
+  if (el("#applyRulesBtn")) el("#applyRulesBtn").addEventListener("click", applyRules);
+  if (el("#addTaskBtn")) el("#addTaskBtn").addEventListener("click", () => saveTask({ address: prompt(t("addTaskPrompt")) || "" }));
+  updateAdminLinks();
   load();
 });
+
+function adminUrl(targetView, targetLang = lang) {
+  const params = new URLSearchParams({
+    token: config.token || "",
+    date: el("#dateInput").value || config.date,
+    lang: targetLang,
+  });
+  return `${adminPaths[targetView] || adminPaths.tasks}?${params.toString()}`;
+}
+
+function updateAdminLinks() {
+  document.querySelectorAll("[data-admin-view]").forEach((link) => {
+    link.href = adminUrl(link.dataset.adminView);
+  });
+}
+
+function switchLang() {
+  location.href = adminUrl(view, lang === "en" ? "zh" : "en");
+}
 
 async function request(path, body) {
   const res = await fetch(path, {
@@ -939,13 +1205,19 @@ async function request(path, body) {
 
 async function load() {
   try {
-    say("读取中...");
+    say(t("loading"));
     const data = await request(api());
     Object.assign(state, data);
-    renderCleaners();
-    renderRules();
-    renderTasks();
-    say(`已加载 ${state.tasks.length} 个任务`);
+    if (el("#cleanerList")) renderCleaners();
+    if (el("#ruleList") || el("#newRuleCleaner")) renderRules();
+    if (el("#taskList")) renderTasks();
+    if (view === "cleaners") {
+      say(fmt(t("loadedCleaners"), { count: state.cleaners.length }));
+    } else if (view === "rules") {
+      say(fmt(t("loadedRules"), { count: state.assignment_rules.length }));
+    } else {
+      say(fmt(t("loadedTasks"), { count: state.tasks.length }));
+    }
   } catch (err) {
     say(err.message, true);
   }
@@ -967,23 +1239,26 @@ async function addCleaner(event) {
 function renderCleaners() {
   const box = el("#cleanerList");
   if (!state.cleaners.length) {
-    box.innerHTML = `<div class="empty">暂无清洁员</div>`;
+    box.innerHTML = `<div class="empty">${esc(t("emptyCleaners"))}</div>`;
     return;
   }
   box.innerHTML = state.cleaners.map((cleaner) => `
     <div class="cleaner">
-      <div><strong>${esc(cleaner.name)}</strong> <span class="pill">${cleaner.active ? "启用" : "停用"}</span></div>
+      <div><strong>${esc(cleaner.name)}</strong> <span class="pill">${cleaner.active ? esc(t("active")) : esc(t("inactive"))}</span></div>
       <div class="copy-row">
         <input readonly value="${esc(cleaner.worker_url)}">
-        <button type="button" data-copy="${esc(cleaner.worker_url)}">复制链接</button>
+        <button type="button" data-copy="${esc(cleaner.worker_url)}">${esc(t("copyLink"))}</button>
       </div>
       <div class="toolbar">
-        <button type="button" data-rotate="${esc(cleaner.id)}">重置链接</button>
-        <button type="button" data-toggle="${esc(cleaner.id)}">${cleaner.active ? "停用" : "启用"}</button>
+        <button type="button" data-rotate="${esc(cleaner.id)}">${esc(t("resetLink"))}</button>
+        <button type="button" data-toggle="${esc(cleaner.id)}">${cleaner.active ? esc(t("stop")) : esc(t("start"))}</button>
       </div>
     </div>
   `).join("");
-  box.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", () => navigator.clipboard.writeText(button.dataset.copy)));
+  box.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(button.dataset.copy);
+    say(t("copied"));
+  }));
   box.querySelectorAll("[data-rotate]").forEach((button) => button.addEventListener("click", () => updateCleaner(button.dataset.rotate, { rotate_token: true })));
   box.querySelectorAll("[data-toggle]").forEach((button) => {
     const cleaner = state.cleaners.find((row) => row.id === button.dataset.toggle);
@@ -1001,36 +1276,37 @@ async function updateCleaner(id, fields) {
 }
 
 function activeCleanerOptions(selected = "") {
-  const options = [`<option value="">选择清洁员</option>`].concat(
+  const options = [`<option value="">${esc(t("allCleaners"))}</option>`].concat(
     state.cleaners
-      .filter((cleaner) => cleaner.active)
-      .map((cleaner) => `<option value="${esc(cleaner.id)}">${esc(cleaner.name)}</option>`)
+      .filter((cleaner) => cleaner.active || cleaner.id === selected)
+      .map((cleaner) => `<option value="${esc(cleaner.id)}"${cleaner.id === selected ? " selected" : ""}>${esc(cleaner.name)}${cleaner.active ? "" : ` (${esc(t("inactive"))})`}</option>`)
   );
-  return options.join("").replace(`value="${esc(selected)}"`, `value="${esc(selected)}" selected`);
+  return options.join("");
 }
 
 function cleanerName(id) {
   const cleaner = state.cleaners.find((item) => item.id === id);
-  return cleaner ? cleaner.name : "未分配";
+  return cleaner ? cleaner.name : t("noCleaner");
 }
 
 function renderRules() {
-  el("#newRuleCleaner").innerHTML = activeCleanerOptions();
+  if (el("#newRuleCleaner")) el("#newRuleCleaner").innerHTML = activeCleanerOptions();
   const box = el("#ruleList");
+  if (!box) return;
   if (!state.assignment_rules.length) {
-    box.innerHTML = `<div class="empty">暂无规则</div>`;
+    box.innerHTML = `<div class="empty">${esc(t("emptyRules"))}</div>`;
     return;
   }
   box.innerHTML = state.assignment_rules.map((rule) => `
     <div class="cleaner" data-rule-id="${esc(rule.id)}">
-      <label>名称<input data-rule-field="name" value="${esc(rule.name)}"></label>
-      <label>匹配地址<input data-rule-field="match" value="${esc(rule.match)}"></label>
-      <label>分配给<select data-rule-field="assigned_to">${activeCleanerOptions(rule.assigned_to)}</select></label>
+      <label>${esc(t("nameLabel"))}<input data-rule-field="name" value="${esc(rule.name)}"></label>
+      <label>${esc(t("matchAddress"))}<input data-rule-field="match" value="${esc(rule.match)}"></label>
+      <label>${esc(t("assignTo"))}<select data-rule-field="assigned_to">${activeCleanerOptions(rule.assigned_to)}</select></label>
       <div class="toolbar">
-        <span class="pill">${rule.active ? "启用" : "停用"}</span>
-        <button class="primary" type="button" data-rule-save="${esc(rule.id)}">保存</button>
-        <button type="button" data-rule-toggle="${esc(rule.id)}">${rule.active ? "停用" : "启用"}</button>
-        <button class="danger" type="button" data-rule-delete="${esc(rule.id)}">删除</button>
+        <span class="pill">${rule.active ? esc(t("active")) : esc(t("inactive"))}</span>
+        <button class="primary" type="button" data-rule-save="${esc(rule.id)}">${esc(t("save"))}</button>
+        <button type="button" data-rule-toggle="${esc(rule.id)}">${rule.active ? esc(t("stop")) : esc(t("start"))}</button>
+        <button class="danger" type="button" data-rule-delete="${esc(rule.id)}">${esc(t("delete"))}</button>
       </div>
       <div class="meta">${esc(rule.match)} -> ${esc(cleanerName(rule.assigned_to))}</div>
     </div>
@@ -1090,7 +1366,7 @@ async function updateRule(id, fields) {
 }
 
 async function deleteRule(id) {
-  if (!confirm("删除这个规则？")) return;
+  if (!confirm(t("deleteRuleConfirm"))) return;
   try {
     await request(api(), { action: "delete_assignment_rule", id });
     await load();
@@ -1103,32 +1379,40 @@ async function applyRules() {
   try {
     const data = await request(api(), { action: "apply_assignment_rules", date: el("#dateInput").value });
     await load();
-    say(`已套用 ${data.changed || 0} 个未分配任务`);
+    say(fmt(t("applyDone"), { count: data.changed || 0 }));
   } catch (err) {
     say(err.message, true);
   }
 }
 
+function sourceLabel(source) {
+  if (source === "guesty") return t("sourceGuesty");
+  if (source === "manual") return t("sourceManual");
+  return source || "";
+}
+
+function statusLabel(value) {
+  return t(`status_${value}`) || state.statuses[value] || value;
+}
+
 function renderTasks() {
   const box = el("#taskList");
   if (!state.tasks.length) {
-    box.innerHTML = `<div class="empty">暂无任务</div>`;
+    box.innerHTML = `<div class="empty">${esc(t("emptyTasks"))}</div>`;
     return;
   }
-  const cleanerOptions = [`<option value="">未分配</option>`].concat(state.cleaners.filter(c => c.active).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`)).join("");
-  const statusOptions = Object.entries(state.statuses).map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("");
   box.innerHTML = state.tasks.map((task) => `
     <div class="task" data-id="${esc(task.id)}">
       <div>
         <div class="address">${esc(task.address)}</div>
-        <div class="meta">${task.turnover ? `<span class="pill turnover">同日入住</span>` : `<span class="pill">普通清洁</span>`} <span class="pill">${esc(task.source)}</span> ${task.assignment_rule_name ? `<span class="pill">规则 ${esc(task.assignment_rule_name)}</span>` : ""}</div>
+        <div class="meta">${task.turnover ? `<span class="pill turnover">${esc(t("sameDay"))}</span>` : `<span class="pill">${esc(t("ordinaryClean"))}</span>`} <span class="pill">${esc(sourceLabel(task.source))}</span> ${task.assignment_rule_name ? `<span class="pill">${esc(t("rule"))} ${esc(task.assignment_rule_name)}</span>` : ""}</div>
       </div>
-      <select data-field="assigned_to">${cleanerOptions}</select>
-      <select data-field="status">${statusOptions}</select>
-      <textarea data-field="admin_note" placeholder="备注">${esc(task.admin_note || "")}</textarea>
+      <select data-field="assigned_to">${taskCleanerOptions(task.assigned_to || "")}</select>
+      <select data-field="status">${statusOptions(task.status || "unassigned")}</select>
+      <textarea data-field="admin_note" placeholder="${esc(t("note"))}">${esc(task.admin_note || "")}</textarea>
       <div class="toolbar">
-        <button class="primary" type="button" data-save="${esc(task.id)}">保存</button>
-        <button class="danger" type="button" data-delete="${esc(task.id)}">删除</button>
+        <button class="primary" type="button" data-save="${esc(task.id)}">${esc(t("save"))}</button>
+        <button class="danger" type="button" data-delete="${esc(task.id)}">${esc(t("delete"))}</button>
       </div>
     </div>
   `).join("");
@@ -1139,6 +1423,19 @@ function renderTasks() {
   }
   box.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", () => saveRow(button.dataset.save)));
   box.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => deleteTask(button.dataset.delete)));
+}
+
+function taskCleanerOptions(selected = "") {
+  const choices = [`<option value=""${selected ? "" : " selected"}>${esc(t("unassignedOption"))}</option>`].concat(
+    state.cleaners
+      .filter((cleaner) => cleaner.active || cleaner.id === selected)
+      .map((cleaner) => `<option value="${esc(cleaner.id)}"${cleaner.id === selected ? " selected" : ""}>${esc(cleaner.name)}${cleaner.active ? "" : ` (${esc(t("inactive"))})`}</option>`)
+  );
+  return choices.join("");
+}
+
+function statusOptions(selected = "unassigned") {
+  return statusOrder.map((value) => `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(statusLabel(value))}</option>`).join("");
 }
 
 function rowPayload(id) {
@@ -1178,7 +1475,7 @@ async function saveTask(fields) {
 }
 
 async function deleteTask(id) {
-  if (!confirm("删除这个任务？")) return;
+  if (!confirm(t("deleteTaskConfirm"))) return;
   try {
     await request(api(), { action: "delete_task", date: el("#dateInput").value, id });
     await load();
@@ -1192,7 +1489,47 @@ async function deleteTask(id) {
 WORKER_SCRIPT = r"""
 const config = window.CLEANING_APP;
 const state = { tasks: [], statuses: {}, cleaner: null };
-const qs = () => new URLSearchParams({ cleaner: config.cleaner || "", token: config.token || "", date: document.querySelector("#dateInput").value });
+const lang = config.lang === "en" ? "en" : "zh";
+const copy = {
+  zh: {
+    done: "已完成",
+    emptyTasks: "今天没有分配给你的任务",
+    loadedTasks: "已加载 {count} 个任务",
+    loading: "读取中...",
+    note: "备注",
+    ordinaryClean: "普通清洁",
+    sameDay: "同日入住",
+    status_assigned: "已分配",
+    status_done: "已完成",
+    status_in_progress: "进行中",
+    status_issue: "有问题",
+    status_unassigned: "未分配",
+    taskTitle: "{name} 的清洁任务",
+    unableToLoad: "无法读取任务",
+    update: "更新",
+  },
+  en: {
+    done: "Done",
+    emptyTasks: "No tasks assigned to you today",
+    loadedTasks: "Loaded {count} task(s)",
+    loading: "Loading...",
+    note: "Notes",
+    ordinaryClean: "Standard Clean",
+    sameDay: "Same-day Turnover",
+    status_assigned: "Assigned",
+    status_done: "Done",
+    status_in_progress: "In Progress",
+    status_issue: "Issue",
+    status_unassigned: "Unassigned",
+    taskTitle: "{name}'s Cleaning Tasks",
+    unableToLoad: "Could not load tasks",
+    update: "Update",
+  },
+};
+const statusOrder = ["assigned", "in_progress", "done", "issue"];
+const t = (key) => copy[lang][key] || copy.zh[key] || key;
+const fmt = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+const qs = () => new URLSearchParams({ cleaner: config.cleaner || "", token: config.token || "", date: document.querySelector("#dateInput").value, lang });
 const api = () => `/api/cleaning/worker?${qs().toString()}`;
 const el = (id) => document.querySelector(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
@@ -1202,8 +1539,19 @@ document.addEventListener("DOMContentLoaded", () => {
   el("#dateInput").value = config.date;
   el("#reloadBtn").addEventListener("click", load);
   el("#dateInput").addEventListener("change", load);
+  el("#langToggle").addEventListener("click", switchLang);
   load();
 });
+
+function switchLang() {
+  const params = new URLSearchParams({
+    cleaner: config.cleaner || "",
+    token: config.token || "",
+    date: el("#dateInput").value || config.date,
+    lang: lang === "en" ? "zh" : "en",
+  });
+  location.href = `/cleaning/worker?${params.toString()}`;
+}
 
 async function request(body) {
   const res = await fetch(api(), {
@@ -1218,37 +1566,38 @@ async function request(body) {
 
 async function load() {
   try {
-    say("读取中...");
+    say(t("loading"));
     const data = await request();
     Object.assign(state, data);
-    el("#workerTitle").textContent = `${state.cleaner.name} 的清洁任务`;
+    el("#workerTitle").textContent = fmt(t("taskTitle"), { name: state.cleaner.name });
     renderTasks();
-    say(`已加载 ${state.tasks.length} 个任务`);
+    say(fmt(t("loadedTasks"), { count: state.tasks.length }));
   } catch (err) {
     say(err.message, true);
-    el("#taskList").innerHTML = `<div class="empty">无法读取任务</div>`;
+    el("#taskList").innerHTML = `<div class="empty">${esc(t("unableToLoad"))}</div>`;
   }
+}
+
+function statusLabel(value) {
+  return t(`status_${value}`) || state.statuses[value] || value;
 }
 
 function renderTasks() {
   const box = el("#taskList");
   if (!state.tasks.length) {
-    box.innerHTML = `<div class="empty">今天没有分配给你的任务</div>`;
+    box.innerHTML = `<div class="empty">${esc(t("emptyTasks"))}</div>`;
     return;
   }
-  const statusOptions = Object.entries(state.statuses)
-    .filter(([value]) => value !== "unassigned")
-    .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("");
   box.innerHTML = state.tasks.map((task) => `
     <div class="task worker-task" data-id="${esc(task.id)}">
       <div>
         <div class="address">${esc(task.address)}</div>
-        <div class="meta">${task.turnover ? `<span class="pill turnover">同日入住</span>` : `<span class="pill">普通清洁</span>`} ${task.status === "done" ? `<span class="pill done">已完成</span>` : ""}</div>
+        <div class="meta">${task.turnover ? `<span class="pill turnover">${esc(t("sameDay"))}</span>` : `<span class="pill">${esc(t("ordinaryClean"))}</span>`} ${task.status === "done" ? `<span class="pill done">${esc(t("done"))}</span>` : ""}</div>
         ${task.admin_note ? `<div class="meta">${esc(task.admin_note)}</div>` : ""}
       </div>
-      <select data-field="status">${statusOptions}</select>
-      <textarea data-field="cleaner_note" placeholder="备注">${esc(task.cleaner_note || "")}</textarea>
-      <button class="primary" type="button" data-save="${esc(task.id)}">更新</button>
+      <select data-field="status">${statusOptions(task.status === "unassigned" ? "assigned" : task.status)}</select>
+      <textarea data-field="cleaner_note" placeholder="${esc(t("note"))}">${esc(task.cleaner_note || "")}</textarea>
+      <button class="primary" type="button" data-save="${esc(task.id)}">${esc(t("update"))}</button>
     </div>
   `).join("");
   for (const task of state.tasks) {
@@ -1256,6 +1605,10 @@ function renderTasks() {
     row.querySelector('[data-field="status"]').value = task.status === "unassigned" ? "assigned" : task.status;
   }
   box.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", () => saveTask(button.dataset.save)));
+}
+
+function statusOptions(selected) {
+  return statusOrder.map((value) => `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(statusLabel(value))}</option>`).join("");
 }
 
 async function saveTask(id) {

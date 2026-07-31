@@ -79,10 +79,13 @@ python3 guesty_automation.py review-new --out data/pending_review.md
 
 清洁任务 App 挂在同一个 Render web service：
 
-- 管理后台：`/cleaning/admin?token=ADMIN_TOKEN`
+- 任务后台：`/cleaning/admin?token=ADMIN_TOKEN`
+- 清洁员管理：`/cleaning/admin/cleaners?token=ADMIN_TOKEN`
+- 自动分配规则：`/cleaning/admin/rules?token=ADMIN_TOKEN`
 - 清洁员页面：管理员在后台新增清洁员后复制专属链接给对方。
 
 清洁员接口会在服务端按专属 token 过滤，只返回分配给该清洁员的任务。
 后台支持地址组自动分配规则，例如把 `1348` 自动分给某个清洁员；多个地址可用逗号写成一组。
+页面支持中英文切换，也可以在 URL 后加 `lang=en` 打开英文版。
 
 配置细节见 `CLEANING_SETUP.md`。

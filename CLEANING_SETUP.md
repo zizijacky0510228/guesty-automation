@@ -48,6 +48,8 @@ The web service also serves a small cleaning task app:
 
 ```text
 /cleaning/admin?token=ADMIN_TOKEN
+/cleaning/admin/cleaners?token=ADMIN_TOKEN
+/cleaning/admin/rules?token=ADMIN_TOKEN
 /cleaning/worker?cleaner=CLEANER_ID&token=CLEANER_TOKEN
 ```
 
@@ -55,6 +57,10 @@ Admins can add cleaners, create manual tasks, assign tasks, and edit status or
 notes. Each cleaner gets a private worker link generated from their cleaner ID
 and token. Worker API responses are filtered on the server, so cleaners only
 receive tasks assigned to their own ID.
+
+The admin app has separate pages for task assignments, cleaners, and
+auto-assignment rules. Add `lang=en` to any app URL, or use the language button,
+to switch between Chinese and English.
 
 Admins can also create address-group auto-assignment rules. For example, a rule
 with match text `1348` assigns any new task whose address contains `1348` to the
