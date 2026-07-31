@@ -77,4 +77,11 @@ python3 guesty_automation.py review-new --out data/pending_review.md
 - 20:00：发送明天清洁任务，并保存基准快照。
 - 10:30 对比任务暂时关闭，优先减少 Guesty API 调用并保证晚 8 点清洁报告稳定发送。
 
+清洁任务 App 挂在同一个 Render web service：
+
+- 管理后台：`/cleaning/admin?token=ADMIN_TOKEN`
+- 清洁员页面：管理员在后台新增清洁员后复制专属链接给对方。
+
+清洁员接口会在服务端按专属 token 过滤，只返回分配给该清洁员的任务。
+
 配置细节见 `CLEANING_SETUP.md`。

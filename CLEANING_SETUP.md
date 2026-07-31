@@ -42,6 +42,32 @@ If `CLEANING_STATE_REDIS_URL` is not configured, the script falls back to local
 files under `data/cleaning_state`, which is useful for local tests but is not a
 durable cloud setup.
 
+## Cleaning App
+
+The web service also serves a small cleaning task app:
+
+```text
+/cleaning/admin?token=ADMIN_TOKEN
+/cleaning/worker?cleaner=CLEANER_ID&token=CLEANER_TOKEN
+```
+
+Admins can add cleaners, create manual tasks, assign tasks, and edit status or
+notes. Each cleaner gets a private worker link generated from their cleaner ID
+and token. Worker API responses are filtered on the server, so cleaners only
+receive tasks assigned to their own ID.
+
+The web service must use the same Render Key Value instance as the cron job:
+
+```text
+CLEANING_STATE_REDIS_URL
+CLEANING_STATE_KEY_PREFIX=guesty-cleaning
+REPORT_TIMEZONE=America/Vancouver
+CLEANING_ADMIN_TOKEN
+```
+
+If `CLEANING_ADMIN_TOKEN` is not set, the app falls back to `GUESTY_WEBHOOK_SECRET`
+for the admin URL token.
+
 ## Manual Commands
 
 Generate and send tomorrow's baseline report:

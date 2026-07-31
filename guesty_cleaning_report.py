@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from cleaning_app import sync_tasks_from_snapshot
 from guesty_automation import DATA_DIR, GuestyClient, GuestyError, extract_items, load_dotenv
 
 
@@ -625,6 +626,7 @@ def run_report(args: argparse.Namespace, store: StateStore, client: GuestyClient
     target_date = report_date_from_args(args, default_offset)
     report, snapshot = collect_report_data(client, target_date)
     store.set_json(snapshot_key(target_date), snapshot)
+    sync_tasks_from_snapshot(store, snapshot)
     is_baseline = getattr(args, "mode", "") == "baseline"
     subject = (
         f"明天清洁任务 {target_date.isoformat()}"

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from cleaning_app import handle_cleaning_request
 from guesty_automation import (
     DATA_DIR,
     GuestyClient,
@@ -57,7 +58,7 @@ PROCESSED_EVENTS = DATA_DIR / "webhook_processed_events.json"
 WEBHOOK_ALERTS = DATA_DIR / "webhook_restriction_alerts.md"
 WEBHOOK_EMAIL_LOG = DATA_DIR / "webhook_alert_emails.jsonl"
 DEFAULT_ALERT_EMAIL_TO = "info@zhanhongltd.com"
-APP_VERSION = "webhook-disabled-no-guesty-calls-2026-07-16"
+APP_VERSION = "webhook-disabled-cleaning-app-2026-07-31"
 OWNER_RULES_PATH = ROOT / "OWNER_RULES.md"
 APPROVED_ANSWERS_PATH = ROOT / "APPROVED_ANSWERS.md"
 REPLY_STYLE_PATH = DATA_DIR / "reply_style.md"
@@ -1133,13 +1134,25 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
     server_version = "GuestyWebhook/0.1"
 
     def do_GET(self) -> None:
-        if urlparse(self.path).path == "/health":
+        path = urlparse(self.path).path
+        cleaning_response = handle_cleaning_request("GET", self.path, self.request_headers())
+        if cleaning_response is not None:
+            self.write_response(
+                cleaning_response.status,
+                cleaning_response.body,
+                cleaning_response.content_type,
+                cleaning_response.headers,
+            )
+            return
+
+        if path == "/health":
             rate_limit_status = guesty_rate_limit_status()
             self.write_json(
                 200,
                 {
                     "status": "ok",
                     "version": APP_VERSION,
+                    "cleaningAppEnabled": True,
                     "sendEnabled": webhook_send_enabled(),
                     "alertEmailEnabled": env_bool("GUESTY_ALERT_EMAIL_ENABLED", True),
                     "aiReplyEnabled": ai_reply_enabled(),
@@ -1165,7 +1178,23 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
         self.write_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/webhooks/guesty/messages":
+        path = urlparse(self.path).path
+        if path.startswith("/api/cleaning/"):
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            response = handle_cleaning_request("POST", self.path, self.request_headers(), raw)
+            if response is None:
+                self.write_json(404, {"error": "not_found"})
+                return
+            self.write_response(
+                response.status,
+                response.body,
+                response.content_type,
+                response.headers,
+            )
+            return
+
+        if path != "/webhooks/guesty/messages":
             self.write_json(404, {"error": "not_found"})
             return
 
@@ -1194,11 +1223,25 @@ class GuestyWebhookHandler(BaseHTTPRequestHandler):
 
     def write_json(self, status: int, body: dict[str, Any]) -> None:
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.write_response(status, encoded, "application/json; charset=utf-8")
+
+    def write_response(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Content-Type", content_type)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(encoded)
+        self.wfile.write(body)
+
+    def request_headers(self) -> dict[str, str]:
+        return {key.lower(): value for key, value in self.headers.items()}
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"{self.address_string()} - {format % args}")

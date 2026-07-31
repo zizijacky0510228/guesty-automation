@@ -44,6 +44,17 @@ services:
         value: "false"
       - key: GUESTY_API_RATE_LIMIT_COOLDOWN_SECONDS
         value: "3600"
+      - key: REPORT_TIMEZONE
+        value: "America/Vancouver"
+      - key: CLEANING_ADMIN_TOKEN
+        sync: false
+      - key: CLEANING_STATE_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: guesty-cleaning-state
+          property: connectionString
+      - key: CLEANING_STATE_KEY_PREFIX
+        value: "guesty-cleaning"
       - key: OPENAI_MAX_COMPLETION_TOKENS
         value: "350"
       - key: OPENAI_API_KEY
