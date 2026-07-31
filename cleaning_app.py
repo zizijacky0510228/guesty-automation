@@ -8,6 +8,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -79,6 +80,10 @@ def tasks_key(task_date: str) -> str:
 
 def cleaners_key() -> str:
     return key_for("cleaners")
+
+
+def assignment_rules_key() -> str:
+    return key_for("assignment-rules")
 
 
 def clean_text(value: Any, limit: int = 500) -> str:
@@ -198,6 +203,104 @@ def worker_url(base_url: str, cleaner: dict[str, Any]) -> str:
     return f"{base_url.rstrip('/')}/cleaning/worker?{query}"
 
 
+def active_cleaner_ids(store: Any) -> set[str]:
+    return {cleaner["id"] for cleaner in load_cleaners(store) if cleaner.get("active") is not False}
+
+
+def active_assignment_rules(store: Any) -> list[dict[str, Any]]:
+    cleaner_ids = active_cleaner_ids(store)
+    return [rule for rule in load_assignment_rules(store) if rule.get("assigned_to") in cleaner_ids]
+
+
+def normalized_match_text(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", clean_text(value, 500).upper())
+
+
+def assignment_rule_tokens(match_text: str) -> list[str]:
+    raw_tokens = re.split(r"[,，;；\n]+", str(match_text or ""))
+    return [token for token in (normalized_match_text(raw) for raw in raw_tokens) if len(token) >= 2]
+
+
+def normalize_assignment_rule(row: dict[str, Any]) -> dict[str, Any] | None:
+    match_text = clean_multiline(row.get("match"), 500)
+    assigned_to = clean_text(row.get("assigned_to"), 80)
+    if not match_text or not assigned_to or not assignment_rule_tokens(match_text):
+        return None
+    rule_id = clean_text(row.get("id"), 80)
+    if not rule_id:
+        rule_id = hashlib.sha256(f"{match_text}|{assigned_to}|{time.time()}".encode()).hexdigest()[:12]
+    name = clean_text(row.get("name"), 120) or clean_text(match_text.splitlines()[0], 120)
+    return {
+        "id": rule_id,
+        "name": name,
+        "match": match_text,
+        "assigned_to": assigned_to,
+        "active": row.get("active") is not False,
+        "created_at": clean_text(row.get("created_at"), 80) or now_iso(),
+        "updated_at": clean_text(row.get("updated_at"), 80) or now_iso(),
+    }
+
+
+def load_assignment_rules(store: Any) -> list[dict[str, Any]]:
+    data = store.get_json(assignment_rules_key()) or {}
+    rows = data.get("rules") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return []
+    rules = []
+    for row in rows:
+        if isinstance(row, dict):
+            rule = normalize_assignment_rule(row)
+            if rule:
+                rules.append(rule)
+    return rules
+
+
+def save_assignment_rules(store: Any, rules: list[dict[str, Any]]) -> None:
+    normalized = [rule for rule in (normalize_assignment_rule(row) for row in rules) if rule]
+    store.set_json(assignment_rules_key(), {"rules": normalized, "updated_at": now_iso()})
+
+
+def assignment_rule_public(rule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": rule["id"],
+        "name": rule["name"],
+        "match": rule["match"],
+        "assigned_to": rule["assigned_to"],
+        "active": rule.get("active") is not False,
+        "created_at": rule.get("created_at", ""),
+        "updated_at": rule.get("updated_at", ""),
+    }
+
+
+def find_assignment_rule(rules: list[dict[str, Any]], address: str) -> dict[str, Any] | None:
+    address_text = normalized_match_text(address)
+    if not address_text:
+        return None
+    for rule in rules:
+        if rule.get("active") is False:
+            continue
+        for token in assignment_rule_tokens(rule.get("match", "")):
+            if address_text.startswith(token) or token in address_text:
+                return rule
+    return None
+
+
+def apply_assignment_rule(task: dict[str, Any], rules: list[dict[str, Any]]) -> dict[str, Any]:
+    if task.get("assigned_to"):
+        return task
+    rule = find_assignment_rule(rules, task.get("address", ""))
+    if not rule:
+        task["assignment_rule_id"] = ""
+        task["assignment_rule_name"] = ""
+        return task
+    task["assigned_to"] = rule["assigned_to"]
+    if task.get("status") == "unassigned":
+        task["status"] = "assigned"
+    task["assignment_rule_id"] = rule["id"]
+    task["assignment_rule_name"] = rule["name"]
+    return task
+
+
 def normalize_task(task_date: str, row: dict[str, Any]) -> dict[str, Any] | None:
     address = clean_text(row.get("address"), 240)
     if not address:
@@ -210,6 +313,8 @@ def normalize_task(task_date: str, row: dict[str, Any]) -> dict[str, Any] | None
     task["admin_note"] = clean_multiline(row.get("admin_note"), 1200)
     task["cleaner_note"] = clean_multiline(row.get("cleaner_note"), 1200)
     task["source"] = clean_text(row.get("source"), 40) or "manual"
+    task["assignment_rule_id"] = clean_text(row.get("assignment_rule_id"), 80)
+    task["assignment_rule_name"] = clean_text(row.get("assignment_rule_name"), 120)
     task["created_at"] = clean_text(row.get("created_at"), 80) or now_iso()
     task["updated_at"] = clean_text(row.get("updated_at"), 80) or now_iso()
     if task["assigned_to"] and task["status"] == "unassigned":
@@ -241,6 +346,7 @@ def save_tasks(store: Any, task_date: str, tasks: list[dict[str, Any]]) -> None:
 def sync_tasks_from_snapshot(store: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     task_date = normalize_date(snapshot.get("report_date"))
     existing = {task["id"]: task for task in load_tasks(store, task_date)}
+    assignment_rules = active_assignment_rules(store)
     synced_ids: set[str] = set()
     synced: list[dict[str, Any]] = []
     for item in snapshot.get("items", []):
@@ -257,7 +363,11 @@ def sync_tasks_from_snapshot(store: Any, snapshot: dict[str, Any]) -> dict[str, 
             task["status"] = previous.get("status", task["status"])
             task["admin_note"] = previous.get("admin_note", "")
             task["cleaner_note"] = previous.get("cleaner_note", "")
+            task["assignment_rule_id"] = previous.get("assignment_rule_id", "")
+            task["assignment_rule_name"] = previous.get("assignment_rule_name", "")
             task["created_at"] = previous.get("created_at", task["created_at"])
+        else:
+            task = apply_assignment_rule(task, assignment_rules)
         task["source"] = "guesty"
         task["updated_at"] = now_iso()
         synced_ids.add(task["id"])
@@ -313,6 +423,7 @@ def app_state_for_admin(store: Any, query: dict[str, list[str]], headers: dict[s
             "date": task_date,
             "statuses": STATUS_LABELS,
             "cleaners": cleaners,
+            "assignment_rules": [assignment_rule_public(rule) for rule in load_assignment_rules(store)],
             "tasks": load_tasks(store, task_date),
         },
     )
@@ -375,11 +486,93 @@ def update_cleaner(store: Any, body: dict[str, Any], headers: dict[str, str]) ->
     raise ValueError("Cleaner not found.")
 
 
+def validate_rule_cleaner(store: Any, cleaner_id: str) -> None:
+    if cleaner_id not in active_cleaner_ids(store):
+        raise ValueError("Active cleaner is required.")
+
+
+def add_assignment_rule(store: Any, body: dict[str, Any]) -> dict[str, Any]:
+    assigned_to = clean_text(body.get("assigned_to"), 80)
+    validate_rule_cleaner(store, assigned_to)
+    rule = normalize_assignment_rule(
+        {
+            "name": body.get("name"),
+            "match": body.get("match"),
+            "assigned_to": assigned_to,
+            "active": True,
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+    )
+    if not rule:
+        raise ValueError("Address group and cleaner are required.")
+    rules = load_assignment_rules(store)
+    if any(existing.get("active") is not False and normalized_match_text(existing.get("match")) == normalized_match_text(rule["match"]) for existing in rules):
+        raise ValueError("Assignment rule already exists.")
+    rules.append(rule)
+    save_assignment_rules(store, rules)
+    return {"assignment_rule": assignment_rule_public(rule)}
+
+
+def update_assignment_rule(store: Any, body: dict[str, Any]) -> dict[str, Any]:
+    rule_id = clean_text(body.get("id"), 80)
+    rules = load_assignment_rules(store)
+    for rule in rules:
+        if rule["id"] != rule_id:
+            continue
+        if "name" in body:
+            rule["name"] = clean_text(body.get("name"), 120) or rule["name"]
+        if "match" in body:
+            rule["match"] = clean_multiline(body.get("match"), 500) or rule["match"]
+        if "assigned_to" in body:
+            assigned_to = clean_text(body.get("assigned_to"), 80)
+            validate_rule_cleaner(store, assigned_to)
+            rule["assigned_to"] = assigned_to
+        if "active" in body:
+            rule["active"] = bool(body.get("active"))
+        rule["updated_at"] = now_iso()
+        normalized = normalize_assignment_rule(rule)
+        if not normalized:
+            raise ValueError("Address group and cleaner are required.")
+        rules = [normalized if existing["id"] == rule_id else existing for existing in rules]
+        save_assignment_rules(store, rules)
+        return {"assignment_rule": assignment_rule_public(normalized)}
+    raise ValueError("Assignment rule not found.")
+
+
+def delete_assignment_rule(store: Any, body: dict[str, Any]) -> dict[str, Any]:
+    rule_id = clean_text(body.get("id"), 80)
+    rules = load_assignment_rules(store)
+    kept = [rule for rule in rules if rule["id"] != rule_id]
+    if len(kept) == len(rules):
+        raise ValueError("Assignment rule not found.")
+    save_assignment_rules(store, kept)
+    return {"deleted": rule_id}
+
+
+def apply_assignment_rules_to_existing_tasks(store: Any, body: dict[str, Any]) -> dict[str, Any]:
+    task_date = normalize_date(body.get("date"))
+    rules = active_assignment_rules(store)
+    tasks = load_tasks(store, task_date)
+    changed = 0
+    for task in tasks:
+        before = (task.get("assigned_to", ""), task.get("status", ""), task.get("assignment_rule_id", ""))
+        apply_assignment_rule(task, rules)
+        after = (task.get("assigned_to", ""), task.get("status", ""), task.get("assignment_rule_id", ""))
+        if after != before:
+            task["updated_at"] = now_iso()
+            changed += 1
+    if changed:
+        save_tasks(store, task_date, tasks)
+    return {"date": task_date, "changed": changed}
+
+
 def upsert_task(store: Any, body: dict[str, Any]) -> dict[str, Any]:
     task_date = normalize_date(body.get("date"))
     tasks = load_tasks(store, task_date)
     task_id_value = clean_text(body.get("id"), 80)
     existing = next((task for task in tasks if task["id"] == task_id_value), None)
+    is_new = existing is None
     if not existing:
         address = clean_text(body.get("address"), 240)
         if not address:
@@ -394,11 +587,17 @@ def upsert_task(store: Any, body: dict[str, Any]) -> dict[str, Any]:
     if "turnover" in body:
         existing["turnover"] = bool(body.get("turnover"))
     if "assigned_to" in body:
-        existing["assigned_to"] = clean_text(body.get("assigned_to"), 80)
+        assigned_to = clean_text(body.get("assigned_to"), 80)
+        if assigned_to != existing.get("assigned_to", ""):
+            existing["assignment_rule_id"] = ""
+            existing["assignment_rule_name"] = ""
+        existing["assigned_to"] = assigned_to
     if "status" in body and body.get("status") in STATUS_VALUES:
         existing["status"] = str(body["status"])
     if "admin_note" in body:
         existing["admin_note"] = clean_multiline(body.get("admin_note"), 1200)
+    if is_new and "assigned_to" not in body:
+        apply_assignment_rule(existing, active_assignment_rules(store))
     if existing["assigned_to"] and existing["status"] == "unassigned":
         existing["status"] = "assigned"
     if not existing["assigned_to"] and existing["status"] == "assigned":
@@ -459,6 +658,14 @@ def handle_api_post(path: str, query: dict[str, list[str]], headers: dict[str, s
                 return json_response(200, add_cleaner(store, payload, headers))
             if action == "update_cleaner":
                 return json_response(200, update_cleaner(store, payload, headers))
+            if action == "add_assignment_rule":
+                return json_response(200, add_assignment_rule(store, payload))
+            if action == "update_assignment_rule":
+                return json_response(200, update_assignment_rule(store, payload))
+            if action == "delete_assignment_rule":
+                return json_response(200, delete_assignment_rule(store, payload))
+            if action == "apply_assignment_rules":
+                return json_response(200, apply_assignment_rules_to_existing_tasks(store, payload))
             if action == "upsert_task":
                 return json_response(200, upsert_task(store, payload))
             if action == "delete_task":
@@ -645,14 +852,27 @@ def render_admin_page(token: str, task_date: str) -> str:
         """,
         "main": """
           <div class="grid admin-grid">
-            <section>
-              <h2>清洁员</h2>
-              <form id="addCleanerForm" class="row">
-                <label>姓名<input id="newCleanerName" autocomplete="off"></label>
-                <button class="primary" type="submit">新增清洁员</button>
-              </form>
-              <div id="cleanerList" class="list" style="margin-top:12px"></div>
-            </section>
+            <div class="grid">
+              <section>
+                <h2>清洁员</h2>
+                <form id="addCleanerForm" class="row">
+                  <label>姓名<input id="newCleanerName" autocomplete="off"></label>
+                  <button class="primary" type="submit">新增清洁员</button>
+                </form>
+                <div id="cleanerList" class="list" style="margin-top:12px"></div>
+              </section>
+              <section>
+                <h2>自动分配规则</h2>
+                <form id="addRuleForm" class="row">
+                  <label>地址组名称<input id="newRuleName" autocomplete="off" placeholder="1348"></label>
+                  <label>匹配地址<input id="newRuleMatch" autocomplete="off" placeholder="1348 或 1348,1346"></label>
+                  <label>分配给<select id="newRuleCleaner"></select></label>
+                  <button class="primary" type="submit">新增规则</button>
+                </form>
+                <button id="applyRulesBtn" type="button" style="width:100%;margin-top:10px">套用到未分配任务</button>
+                <div id="ruleList" class="list" style="margin-top:12px"></div>
+              </section>
+            </div>
             <section>
               <div class="toolbar" style="justify-content:space-between;margin-bottom:12px">
                 <h2>任务分配</h2>
@@ -688,7 +908,7 @@ def render_worker_page(cleaner_id: str, token: str, task_date: str) -> str:
 
 ADMIN_SCRIPT = r"""
 const config = window.CLEANING_APP;
-const state = { cleaners: [], tasks: [], statuses: {} };
+const state = { cleaners: [], assignment_rules: [], tasks: [], statuses: {} };
 const qs = () => new URLSearchParams({ token: config.token || "", date: document.querySelector("#dateInput").value });
 const api = () => `/api/cleaning/admin?${qs().toString()}`;
 const el = (id) => document.querySelector(id);
@@ -700,6 +920,8 @@ document.addEventListener("DOMContentLoaded", () => {
   el("#reloadBtn").addEventListener("click", load);
   el("#dateInput").addEventListener("change", load);
   el("#addCleanerForm").addEventListener("submit", addCleaner);
+  el("#addRuleForm").addEventListener("submit", addRule);
+  el("#applyRulesBtn").addEventListener("click", applyRules);
   el("#addTaskBtn").addEventListener("click", () => saveTask({ address: prompt("输入清洁地址") || "" }));
   load();
 });
@@ -721,6 +943,7 @@ async function load() {
     const data = await request(api());
     Object.assign(state, data);
     renderCleaners();
+    renderRules();
     renderTasks();
     say(`已加载 ${state.tasks.length} 个任务`);
   } catch (err) {
@@ -777,6 +1000,115 @@ async function updateCleaner(id, fields) {
   }
 }
 
+function activeCleanerOptions(selected = "") {
+  const options = [`<option value="">选择清洁员</option>`].concat(
+    state.cleaners
+      .filter((cleaner) => cleaner.active)
+      .map((cleaner) => `<option value="${esc(cleaner.id)}">${esc(cleaner.name)}</option>`)
+  );
+  return options.join("").replace(`value="${esc(selected)}"`, `value="${esc(selected)}" selected`);
+}
+
+function cleanerName(id) {
+  const cleaner = state.cleaners.find((item) => item.id === id);
+  return cleaner ? cleaner.name : "未分配";
+}
+
+function renderRules() {
+  el("#newRuleCleaner").innerHTML = activeCleanerOptions();
+  const box = el("#ruleList");
+  if (!state.assignment_rules.length) {
+    box.innerHTML = `<div class="empty">暂无规则</div>`;
+    return;
+  }
+  box.innerHTML = state.assignment_rules.map((rule) => `
+    <div class="cleaner" data-rule-id="${esc(rule.id)}">
+      <label>名称<input data-rule-field="name" value="${esc(rule.name)}"></label>
+      <label>匹配地址<input data-rule-field="match" value="${esc(rule.match)}"></label>
+      <label>分配给<select data-rule-field="assigned_to">${activeCleanerOptions(rule.assigned_to)}</select></label>
+      <div class="toolbar">
+        <span class="pill">${rule.active ? "启用" : "停用"}</span>
+        <button class="primary" type="button" data-rule-save="${esc(rule.id)}">保存</button>
+        <button type="button" data-rule-toggle="${esc(rule.id)}">${rule.active ? "停用" : "启用"}</button>
+        <button class="danger" type="button" data-rule-delete="${esc(rule.id)}">删除</button>
+      </div>
+      <div class="meta">${esc(rule.match)} -> ${esc(cleanerName(rule.assigned_to))}</div>
+    </div>
+  `).join("");
+  box.querySelectorAll("[data-rule-save]").forEach((button) => button.addEventListener("click", () => saveRule(button.dataset.ruleSave)));
+  box.querySelectorAll("[data-rule-toggle]").forEach((button) => {
+    const rule = state.assignment_rules.find((item) => item.id === button.dataset.ruleToggle);
+    button.addEventListener("click", () => updateRule(button.dataset.ruleToggle, { active: !rule.active }));
+  });
+  box.querySelectorAll("[data-rule-delete]").forEach((button) => button.addEventListener("click", () => deleteRule(button.dataset.ruleDelete)));
+}
+
+async function addRule(event) {
+  event.preventDefault();
+  const name = el("#newRuleName").value.trim();
+  const match = el("#newRuleMatch").value.trim();
+  const assigned_to = el("#newRuleCleaner").value;
+  if (!match || !assigned_to) return;
+  try {
+    await request(api(), { action: "add_assignment_rule", name, match, assigned_to });
+    el("#newRuleName").value = "";
+    el("#newRuleMatch").value = "";
+    el("#newRuleCleaner").value = "";
+    await load();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+function rulePayload(id) {
+  const row = el(`#ruleList [data-rule-id="${CSS.escape(id)}"]`);
+  return {
+    action: "update_assignment_rule",
+    id,
+    name: row.querySelector('[data-rule-field="name"]').value,
+    match: row.querySelector('[data-rule-field="match"]').value,
+    assigned_to: row.querySelector('[data-rule-field="assigned_to"]').value,
+  };
+}
+
+async function saveRule(id) {
+  try {
+    await request(api(), rulePayload(id));
+    await load();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+async function updateRule(id, fields) {
+  try {
+    await request(api(), { action: "update_assignment_rule", id, ...fields });
+    await load();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+async function deleteRule(id) {
+  if (!confirm("删除这个规则？")) return;
+  try {
+    await request(api(), { action: "delete_assignment_rule", id });
+    await load();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+async function applyRules() {
+  try {
+    const data = await request(api(), { action: "apply_assignment_rules", date: el("#dateInput").value });
+    await load();
+    say(`已套用 ${data.changed || 0} 个未分配任务`);
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
 function renderTasks() {
   const box = el("#taskList");
   if (!state.tasks.length) {
@@ -789,7 +1121,7 @@ function renderTasks() {
     <div class="task" data-id="${esc(task.id)}">
       <div>
         <div class="address">${esc(task.address)}</div>
-        <div class="meta">${task.turnover ? `<span class="pill turnover">同日入住</span>` : `<span class="pill">普通清洁</span>`} <span class="pill">${esc(task.source)}</span></div>
+        <div class="meta">${task.turnover ? `<span class="pill turnover">同日入住</span>` : `<span class="pill">普通清洁</span>`} <span class="pill">${esc(task.source)}</span> ${task.assignment_rule_name ? `<span class="pill">规则 ${esc(task.assignment_rule_name)}</span>` : ""}</div>
       </div>
       <select data-field="assigned_to">${cleanerOptions}</select>
       <select data-field="status">${statusOptions}</select>

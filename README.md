@@ -83,5 +83,6 @@ python3 guesty_automation.py review-new --out data/pending_review.md
 - 清洁员页面：管理员在后台新增清洁员后复制专属链接给对方。
 
 清洁员接口会在服务端按专属 token 过滤，只返回分配给该清洁员的任务。
+后台支持地址组自动分配规则，例如把 `1348` 自动分给某个清洁员；多个地址可用逗号写成一组。
 
 配置细节见 `CLEANING_SETUP.md`。

@@ -56,6 +56,13 @@ notes. Each cleaner gets a private worker link generated from their cleaner ID
 and token. Worker API responses are filtered on the server, so cleaners only
 receive tasks assigned to their own ID.
 
+Admins can also create address-group auto-assignment rules. For example, a rule
+with match text `1348` assigns any new task whose address contains `1348` to the
+selected cleaner. Use comma-separated match text such as `1348,1346` when one
+cleaner should own a wider group. Rules apply to newly synced/newly created
+tasks and can be manually applied to currently unassigned tasks from the admin
+page. Existing assigned tasks are not overwritten.
+
 The web service must use the same Render Key Value instance as the cron job:
 
 ```text
